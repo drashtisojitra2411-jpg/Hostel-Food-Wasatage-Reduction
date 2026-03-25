@@ -1,0 +1,275 @@
+* {
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+  font-family:system-ui;
+}
+
+html { scroll-behavior:smooth; }
+
+body {
+  background:radial-gradient(circle at top,#0f172a,#000);
+  color:white;
+}
+
+/* NAV */
+
+.navbar {
+  display:flex;
+  justify-content:space-between;
+  padding:20px 80px;
+}
+
+.join-btn {
+  background:#6366f1;
+  padding:10px 22px;
+  border-radius:20px;
+  color:white;
+  text-decoration:none;
+}
+
+.contents {
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+  padding: 36px 42px;
+  border-radius: 26px;
+  box-shadow:
+    inset 0 0 40px rgba(255,255,255,0.03),
+    0 0 60px rgba(0,0,0,0.8);
+  backdrop-filter: blur(8px);
+  min-width: 280px;
+}
+
+.contents h3 {
+  margin-bottom: 20px;
+  font-size: 20px;
+}
+
+.contents ul {
+  padding-left: 0;
+}
+
+.contents li {
+  list-style: none;
+  margin-bottom: 14px;
+  font-size: 15px;
+  opacity: 0.85;
+}
+
+.contents li::before {
+  content: "•";
+  color: #9aff4f;
+  margin-right: 10px;
+}
+
+/* HERO */
+
+.hero {
+  display:flex;
+  justify-content:space-between;
+  padding:100px;
+}
+
+.hero h1 {font-size:72px;}
+
+.hero span {color:#6366f1;}
+
+.green {
+  background:#a6ff4f;
+  padding:14px 30px;
+  border-radius:40px;
+  border:none;
+}
+
+/* ======================
+     PRECISION FIX
+====================== */
+
+.precision {
+  padding: 160px 140px;
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  align-items: center;
+  gap: 80px;
+}
+
+.precision h2 {
+  font-size: 68px;
+  line-height: 1.1;
+}
+
+.precision .tag {
+  margin-bottom: 14px;
+  display: inline-block;
+}
+
+/* RIGHT SIDE CARDS */
+
+.cards-row {
+  display: flex;
+  gap: 40px;
+}
+
+.big-card {
+  width: 340px;
+  min-height: 220px;
+  padding: 40px;
+  border-radius: 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-shadow: 0 0 60px rgba(0,0,0,0.6);
+}
+
+/* COLORS */
+
+.blue {
+  background: linear-gradient(135deg,#6366f1,#7b82ff);
+}
+
+.green {
+  background: linear-gradient(135deg,#a6ff4f,#d9ff9f);
+  color: black;
+}
+
+.big-card h3 {
+  margin: 10px 0;
+}
+
+.metric {
+  margin-top: 12px;
+  font-weight: 600;
+}
+
+
+/* =====================
+      IMPACT FIXED
+===================== */
+
+.impact {
+  padding: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.impact h2 {
+  font-size: 64px;
+}
+
+.impact-grid {
+  display: flex;
+  gap: 60px;
+  align-items: center;
+}
+
+/* LEFT TEXT */
+
+.impact-left {
+  max-width: 480px;
+}
+
+.status {
+  background: rgba(255,255,255,0.05);
+  padding: 18px 22px;
+  border-radius: 18px;
+  margin-bottom: 16px;
+  font-size: 15px;
+}
+
+/* BEFORE AFTER CARD */
+
+.before-after {
+  flex: 1;
+  height: 260px;
+  display: flex;
+  border-radius: 28px;
+  overflow: hidden;
+  box-shadow: 0 0 60px rgba(0,0,0,0.8);
+}
+
+.half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.before {
+  background: linear-gradient(#3b1616,#1a0505);
+}
+
+.after {
+  background: linear-gradient(#065f46,#032c22);
+}
+
+.half h3,
+.half span {
+  text-align: center;
+  display: block;
+}
+
+.half span {
+  margin-top: 8px;
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+/* ====================
+      VISION
+==================== */
+
+.vision {
+  padding:140px;
+  text-align:center;
+}
+
+.vision-cards {
+  display:flex;
+  justify-content:center;
+  gap:40px;
+}
+
+.vision-card {
+  width:300px;
+  padding:40px;
+  border-radius:30px;
+  background:#0d0d0d;
+}
+
+.vision-card.highlight {
+  background:#b7f86b;
+  color:black;
+  transform:scale(1.1);
+}
+
+.vision-btn {
+  display:inline-block;
+  margin-top:50px;
+  background:#b7f86b;
+  padding:16px 40px;
+  border-radius:40px;
+  text-decoration:none;
+  color:black;
+}
+
+/* SECONDARY CTA BUTTON */
+
+.outline {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.25);
+  padding: 15px 32px;
+  border-radius: 40px;
+  color: white;
+  font-weight: 500;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.outline:hover {
+  border-color: #9aff4f;
+  color: #9aff4f;
+}

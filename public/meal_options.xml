@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mealOptions>
+    <!-- MONDAY -->
+    <day name="monday">
+        <meal type="breakfast">
+            <option id="1">Idli, Sambar, Chutney</option>
+            <option id="2">Poha with Peanuts</option>
+            <option id="3">Upma with Vegetables</option>
+            <option id="4">Aloo Paratha with Curd</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Rice, Dal Tadka, Aloo Gobi</option>
+            <option id="2">Jeera Rice, Rajma, Salad</option>
+            <option id="3">Curd Rice, Sambar, Papad</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Chapati, Paneer Butter Masala</option>
+            <option id="2">Phulka, Mix Veg Curry</option>
+            <option id="3">Paratha, Dal Makhani</option>
+        </meal>
+    </day>
+
+    <!-- TUESDAY -->
+    <day name="tuesday">
+        <meal type="breakfast">
+            <option id="1">Dosa, Coconut Chutney</option>
+            <option id="2">Bread Butter, Omelette</option>
+            <option id="3">Puri Bhaji</option>
+            <option id="4">Cornflakes with Milk</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Lemon Rice, Rasam, Papad</option>
+            <option id="2">Plain Rice, Chole, Raita</option>
+            <option id="3">Veg Pulao, Dal Fry</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Veg Biryani, Raita</option>
+            <option id="2">Roti, Bhindi Masala</option>
+            <option id="3">Naan, Shahi Paneer</option>
+        </meal>
+    </day>
+
+    <!-- WEDNESDAY -->
+    <day name="wednesday">
+        <meal type="breakfast">
+            <option id="1">Medu Vada, Sambar</option>
+            <option id="2">Aloo Sandwich, Chutney</option>
+            <option id="3">Poori, Aloo Sabzi</option>
+            <option id="4">Uttapam, Chutney</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Rice, Sambar, Poriyal</option>
+            <option id="2">Chapati, Kadhi, Rice</option>
+            <option id="3">Fried Rice, Manchurian</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Roti, Palak Paneer</option>
+            <option id="2">Paratha, Chana Masala</option>
+            <option id="3">Chapati, Egg Curry</option>
+        </meal>
+    </day>
+
+    <!-- THURSDAY -->
+    <day name="thursday">
+        <meal type="breakfast">
+            <option id="1">Chole Bhature</option>
+            <option id="2">Rava Dosa, Chutney</option>
+            <option id="3">Stuffed Paratha, Pickle</option>
+            <option id="4">Dhokla, Green Chutney</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Rice, Dal Palak, Aloo Fry</option>
+            <option id="2">Pulao, Paneer Curry</option>
+            <option id="3">Roti, Mix Dal, Salad</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Jeera Rice, Rajma</option>
+            <option id="2">Chapati, Aloo Matar</option>
+            <option id="3">Pav Bhaji</option>
+        </meal>
+    </day>
+
+    <!-- FRIDAY -->
+    <day name="friday">
+        <meal type="breakfast">
+            <option id="1">Masala Dosa, Chutney</option>
+            <option id="2">Besan Chilla, Mint Chutney</option>
+            <option id="3">Bread Pakora, Ketchup</option>
+            <option id="4">Sabudana Khichdi</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Veg Biryani, Mirchi Ka Salan</option>
+            <option id="2">Rice, Moong Dal, Cabbage Sabzi</option>
+            <option id="3">Lemon Rice, Veg Korma</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Chapati, Matar Paneer</option>
+            <option id="2">Roti, Baingan Bharta</option>
+            <option id="3">Kulcha, Chana Masala</option>
+        </meal>
+    </day>
+
+    <!-- SATURDAY -->
+    <day name="saturday">
+        <meal type="breakfast">
+            <option id="1">Pav Bhaji</option>
+            <option id="2">Misal Pav</option>
+            <option id="3">Aloo Tikki, Chutney</option>
+            <option id="4">Stuffed Dosa</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Veg Thali (Rice, Dal, Sabzi, Roti)</option>
+            <option id="2">Paneer Biryani, Raita</option>
+            <option id="3">Curd Rice, Pickle, Papad</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Butter Naan, Dal Makhani</option>
+            <option id="2">Roti, Malai Kofta</option>
+            <option id="3">Fried Rice, Gobi Manchurian</option>
+        </meal>
+    </day>
+
+    <!-- SUNDAY -->
+    <day name="sunday">
+        <meal type="breakfast">
+            <option id="1">Chole Bhature, Lassi</option>
+            <option id="2">Pancakes, Maple Syrup</option>
+            <option id="3">Masala Omelette, Toast</option>
+            <option id="4">Aloo Paratha, Butter</option>
+        </meal>
+        <meal type="lunch">
+            <option id="1">Special Biryani, Raita</option>
+            <option id="2">Paneer Tikka, Naan, Dal</option>
+            <option id="3">Rice, Sambar, Rasam, Papad</option>
+        </meal>
+        <meal type="dinner">
+            <option id="1">Butter Chicken (Paneer), Naan</option>
+            <option id="2">Roti, Shahi Paneer, Rice</option>
+            <option id="3">Veg Pulao, Raita, Gulab Jamun</option>
+        </meal>
+    </day>
+</mealOptions>

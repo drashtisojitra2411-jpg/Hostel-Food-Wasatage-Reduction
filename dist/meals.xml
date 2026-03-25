@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<meals>
+    <meal id="breakfast">
+        <name>BREAKFAST</name>
+        <menu>IDLI, SAMBAR, CHUTNEY</menu>
+        <calories>320</calories>
+        <protein>8g</protein>
+        <carbs>45g</carbs>
+        <fats>6g</fats>
+        <icon>🍳</icon>
+    </meal>
+    <meal id="lunch">
+        <name>LUNCH</name>
+        <menu>STEAMED RICE, DAL, ALOO GOBI</menu>
+        <calories>650</calories>
+        <protein>12g</protein>
+        <carbs>85g</carbs>
+        <fats>10g</fats>
+        <icon>🍛</icon>
+    </meal>
+    <meal id="dinner">
+        <name>DINNER</name>
+        <menu>PHULKA, PANEER BUTTER MASALA</menu>
+        <calories>580</calories>
+        <protein>14g</protein>
+        <carbs>70g</carbs>
+        <fats>15g</fats>
+        <icon>🌙</icon>
+    </meal>
+</meals>

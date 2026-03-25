@@ -1,0 +1,109 @@
+* {
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+  font-family:system-ui;
+}
+
+body {
+  background: radial-gradient(circle at top,#0f172a,#000);
+  color:white;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* NAV */
+
+.vision-nav {
+  padding:22px 80px;
+}
+
+.logo {
+  color:white;
+  text-decoration:none;
+  font-weight:700;
+  font-size:20px;
+}
+
+/* HERO */
+
+.vision-hero {
+  min-height:calc(100vh - 80px);
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  text-align:center;
+  gap:80px;
+}
+
+/* TITLE */
+
+.vision-title {
+  font-size:120px;
+  letter-spacing:-4px;
+}
+
+.vision-title span {
+  color:#b7f86b;
+}
+
+/* CARDS */
+
+.vision-cards {
+  display:flex;
+  gap:50px;
+}
+
+.vision-card {
+  width:300px;
+  padding:38px 30px;
+  border-radius:32px;
+  background:#0c0c0c;
+  box-shadow:
+    inset 0 0 40px rgba(255,255,255,0.03),
+    0 0 80px rgba(0,0,0,0.9);
+}
+
+.vision-card h3 {
+  font-size:30px;
+  margin:14px 0;
+}
+
+.vision-card p {
+  font-size:13px;
+  opacity:.75;
+}
+
+/* CENTER GLOW */
+
+.vision-card.highlight {
+  background:linear-gradient(#b7f86b,#d9ff9f);
+  color:black;
+  transform:scale(1.15);
+  box-shadow:0 0 120px rgba(180,255,120,.7);
+}
+
+/* TAG COLORS */
+
+.red {color:#ff6b6b;}
+.purple {color:#8b5cf6;}
+
+/* BUTTON */
+
+.vision-btn {
+  background:#b7f86b;
+  padding:14px 36px;
+  border-radius:40px;
+  text-decoration:none;
+  color:black;
+  font-weight:600;
+  box-shadow:0 0 40px rgba(180,255,120,.6);
+}
+
+/* RESPONSIVE */
+
+@media(max-width:1000px){
+  .vision-title{font-size:70px;}
+  .vision-cards{flex-direction:column;}
+}
