@@ -474,7 +474,7 @@
 
   /* Creative Overhaul Utilities */
   .text-jumbo {
-    @apply text-6xl lg:text-9xl font-display font-black leading-tight tracking-tighter;
+    @apply text-3xl sm:text-4xl md:text-6xl lg:text-9xl font-display font-black leading-tight tracking-tighter;
   }
 
   .block-reveal-container {
