@@ -82,12 +82,30 @@ export default function AttendanceScanner() {
     const [success, setSuccess] = useState('')
     const [toast, setToast] = useState('')
     const [lastAttendance, setLastAttendance] = useState(null)
+    const [mealWindow, setMealWindow] = useState(null)
     const isStudentRole = role === 'student'
+    const isMealActive = Boolean(mealWindow?.active_meal)
 
     const isSecureContext = useMemo(() => {
         const protocol = window.location.protocol
         const host = window.location.hostname
         return protocol === 'https:' || LOCAL_HOSTS.has(host)
+    }, [])
+
+    // Fetch current meal window on mount and poll every 60s
+    useEffect(() => {
+        let cancelled = false
+        async function fetchMealWindow() {
+            try {
+                const data = await api.get('/api/meal-timings/current')
+                if (!cancelled) setMealWindow(data)
+            } catch {
+                // Silently fail — scanner still works, just without time awareness
+            }
+        }
+        fetchMealWindow()
+        const interval = setInterval(fetchMealWindow, 60_000)
+        return () => { cancelled = true; clearInterval(interval) }
     }, [])
 
     const ensureScanner = useCallback(async () => {
@@ -284,7 +302,7 @@ export default function AttendanceScanner() {
                             <div className="grid grid-cols-2 gap-2 mt-3">
                                 <Button
                                     onClick={startScanner}
-                                    disabled={!isSecureContext || !isStudentRole || isScanning || isSubmitting}
+                                    disabled={!isSecureContext || !isStudentRole || isScanning || isSubmitting || !isMealActive}
                                     className="w-full !min-h-[48px] !text-sm"
                                 >
                                     {isSubmitting ? 'Recording...' : isScanning ? 'Scanning...' : 'Start Camera'}
@@ -298,6 +316,23 @@ export default function AttendanceScanner() {
                                     Stop
                                 </Button>
                             </div>
+                            {!isMealActive && mealWindow && (
+                                <div className="mt-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+                                    <p className="text-sm font-semibold text-yellow-300">
+                                        {mealWindow.next_meal
+                                            ? `Next meal: ${mealWindow.next_meal.meal_name.charAt(0).toUpperCase() + mealWindow.next_meal.meal_name.slice(1)} starts at ${mealWindow.next_meal.start_time_display}${mealWindow.next_meal.is_tomorrow ? ' (tomorrow)' : ''}`
+                                            : 'No upcoming meals scheduled.'}
+                                    </p>
+                                    <p className="text-xs text-white/50 mt-1">Current IST: {mealWindow.current_time_ist}</p>
+                                </div>
+                            )}
+                            {isMealActive && mealWindow?.active_meal && (
+                                <div className="mt-3 rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3">
+                                    <p className="text-sm font-semibold text-creative-lime">
+                                        {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} is active ({mealWindow.active_meal.start_time_display} – {mealWindow.active_meal.end_time_display})
+                                    </p>
+                                </div>
+                            )}
                         </Card>
 
                         <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
@@ -308,6 +343,21 @@ export default function AttendanceScanner() {
                                 <li>Hold camera steady for 1-2 seconds.</li>
                                 <li>If expired, request a fresh QR.</li>
                             </ul>
+                            {mealWindow?.all_timings && (
+                                <div className="mt-4 border-t border-white/10 pt-3">
+                                    <h3 className="text-sm font-semibold text-white/80 mb-2">Meal Windows (IST)</h3>
+                                    <div className="space-y-1">
+                                        {mealWindow.all_timings.map((t) => (
+                                            <div key={t.meal_name} className={`text-xs px-2 py-1 rounded-lg flex justify-between ${
+                                                t.is_active ? 'bg-creative-lime/15 text-creative-lime font-bold' : 'text-white/50'
+                                            }`}>
+                                                <span>{t.meal_name.charAt(0).toUpperCase() + t.meal_name.slice(1)}</span>
+                                                <span>{t.start_time_display} – {t.end_time_display}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                             {!isSecureContext && (
                                 <p className="text-xs text-yellow-300 mt-3">
                                     Camera works only on HTTPS (or localhost in development).

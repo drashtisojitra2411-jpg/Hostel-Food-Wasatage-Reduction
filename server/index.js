@@ -109,6 +109,56 @@ function normalizeRole(role) {
     return String(role || '').trim().toLowerCase();
 }
 
+// ─── IST Timezone Helpers ───────────────────────────────────────────────────
+const IST_TIMEZONE = 'Asia/Kolkata';
+
+function getISTNow() {
+    const now = new Date();
+    const istStr = now.toLocaleString('en-US', { timeZone: IST_TIMEZONE });
+    const istDate = new Date(istStr);
+    return {
+        date: istDate,
+        hours: istDate.getHours(),
+        minutes: istDate.getMinutes(),
+        timeString: istDate.toLocaleTimeString('en-IN', { timeZone: IST_TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false }),
+        dateString: istDate.toLocaleDateString('en-CA', { timeZone: IST_TIMEZONE }), // YYYY-MM-DD
+    };
+}
+
+function timeToMinutes(timeStr) {
+    const [h, m] = String(timeStr || '').split(':').map(Number);
+    return (h || 0) * 60 + (m || 0);
+}
+
+function isWithinMealTime(startTime, endTime) {
+    const ist = getISTNow();
+    const currentMinutes = ist.hours * 60 + ist.minutes;
+    const startMinutes = timeToMinutes(startTime);
+    const endMinutes = timeToMinutes(endTime);
+
+    // Handle midnight crossover (e.g., 22:00 - 01:00)
+    let within;
+    if (endMinutes < startMinutes) {
+        within = currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+    } else {
+        within = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    }
+
+    return {
+        within,
+        currentTime: ist.timeString,
+        startTime: String(startTime || '').slice(0, 5),
+        endTime: String(endTime || '').slice(0, 5),
+    };
+}
+
+function formatTime12h(timeStr) {
+    const [h, m] = String(timeStr || '').split(':').map(Number);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 async function ensureMenuVotingTable() {
     await pool.query(
         `CREATE TABLE IF NOT EXISTS menu_votes (
@@ -148,6 +198,29 @@ async function ensureAttendanceTables() {
             UNIQUE(user_id, meal_id)
         )`
     );
+
+    // meal_timings table — stores allowed time windows for each meal (IST)
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS meal_timings (
+            id SERIAL PRIMARY KEY,
+            meal_name VARCHAR(20) UNIQUE NOT NULL,
+            start_time TIME NOT NULL,
+            end_time TIME NOT NULL
+        )`
+    );
+
+    // Seed default meal timings if empty
+    const existing = await pool.query('SELECT COUNT(*)::int AS count FROM meal_timings');
+    if (existing.rows[0].count === 0) {
+        await pool.query(
+            `INSERT INTO meal_timings (meal_name, start_time, end_time) VALUES
+             ('breakfast', '07:30', '09:30'),
+             ('lunch',     '12:00', '14:00'),
+             ('dinner',    '19:00', '21:00')
+             ON CONFLICT (meal_name) DO NOTHING`
+        );
+        console.log('🍽️  Default meal timings seeded (IST)');
+    }
 }
 
 // Test DB connection on startup
@@ -810,6 +883,63 @@ app.get('/api/meals', async (req, res) => {
     }
 });
 
+// GET /api/meal-timings/current — Returns all meal windows and which is currently active (IST)
+app.get('/api/meal-timings/current', async (req, res) => {
+    try {
+        const timingsRes = await pool.query('SELECT meal_name, start_time, end_time FROM meal_timings ORDER BY start_time');
+        const timings = timingsRes.rows;
+        const ist = getISTNow();
+
+        let activeMeal = null;
+        let nextMeal = null;
+        const currentMinutes = ist.hours * 60 + ist.minutes;
+
+        const meals = timings.map((t) => {
+            const startStr = String(t.start_time).slice(0, 5);
+            const endStr = String(t.end_time).slice(0, 5);
+            const check = isWithinMealTime(startStr, endStr);
+            const entry = {
+                meal_name: t.meal_name,
+                start_time: startStr,
+                end_time: endStr,
+                start_time_display: formatTime12h(startStr),
+                end_time_display: formatTime12h(endStr),
+                is_active: check.within,
+            };
+            if (check.within && !activeMeal) {
+                activeMeal = entry;
+            }
+            return entry;
+        });
+
+        // Find next upcoming meal if none is active
+        if (!activeMeal) {
+            for (const m of meals) {
+                const mealStart = timeToMinutes(m.start_time);
+                if (mealStart > currentMinutes) {
+                    nextMeal = m;
+                    break;
+                }
+            }
+            // If no meal is later today, next meal is the first one tomorrow
+            if (!nextMeal && meals.length > 0) {
+                nextMeal = { ...meals[0], is_tomorrow: true };
+            }
+        }
+
+        res.json({
+            current_time_ist: ist.timeString,
+            current_date_ist: ist.dateString,
+            active_meal: activeMeal,
+            next_meal: nextMeal,
+            all_timings: meals,
+        });
+    } catch (error) {
+        console.error('Meal timings error:', error);
+        res.status(500).json({ error: 'Failed to fetch meal timings' });
+    }
+});
+
 // GET /api/generate-qr/:mealId - Generate attendance QR (mess manager / hostel admin only)
 app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin']), async (req, res) => {
     try {
@@ -895,9 +1025,7 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         }
 
         const mealRes = await client.query(
-            `SELECT id, date, start_time, end_time, is_active,
-                    CURRENT_DATE = date AS is_today,
-                    CURRENT_TIME BETWEEN start_time AND end_time AS within_window
+            `SELECT id, date, meal_type, start_time, end_time, is_active
              FROM meals
              WHERE id = $1`,
             [payload.meal_id]
@@ -910,11 +1038,40 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         if (!meal.is_active) {
             return res.status(400).json({ error: 'Meal is not active' });
         }
-        if (!meal.is_today) {
+
+        // IST-aware date check
+        const ist = getISTNow();
+        const mealDateStr = new Date(meal.date).toLocaleDateString('en-CA', { timeZone: IST_TIMEZONE });
+        if (ist.dateString !== mealDateStr) {
             return res.status(400).json({ error: 'Invalid QR for current date' });
         }
-        if (!meal.within_window) {
-            return res.status(400).json({ error: 'Outside meal window' });
+
+        // IST-aware time window check using meal_timings table
+        const mealType = normalizeMealType(meal.meal_type);
+        let startTime = String(meal.start_time || '').slice(0, 5);
+        let endTime = String(meal.end_time || '').slice(0, 5);
+
+        // Override with meal_timings table if available
+        if (mealType) {
+            const timingRes = await client.query(
+                'SELECT start_time, end_time FROM meal_timings WHERE meal_name = $1',
+                [mealType]
+            );
+            if (timingRes.rows.length > 0) {
+                startTime = String(timingRes.rows[0].start_time).slice(0, 5);
+                endTime = String(timingRes.rows[0].end_time).slice(0, 5);
+            }
+        }
+
+        const timeCheck = isWithinMealTime(startTime, endTime);
+        console.log(`[Attendance] IST time: ${timeCheck.currentTime}, meal window: ${timeCheck.startTime}-${timeCheck.endTime}, within: ${timeCheck.within}`);
+
+        if (!timeCheck.within) {
+            return res.status(400).json({
+                error: `Attendance is allowed from ${formatTime12h(startTime)} to ${formatTime12h(endTime)} IST`,
+                allowed_window: { start: startTime, end: endTime },
+                current_time_ist: timeCheck.currentTime
+            });
         }
 
         await client.query('BEGIN');
@@ -2099,152 +2256,6 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// QR CODE GENERATION & ATTENDANCE
-// ═══════════════════════════════════════════════════════════════════════════
-
-// GET /api/generate-qr/:mealId — Generate a time-limited attendance QR for a meal
-app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
-    console.log("QR GENERATE HIT");
-    try {
-        const { mealId } = req.params;
-
-        // Verify the meal exists
-        const mealRes = await pool.query('SELECT id, meal_type, date FROM meals WHERE id = $1', [mealId]);
-        if (mealRes.rows.length === 0) {
-            return res.status(404).json({ error: 'Meal not found' });
-        }
-
-        const meal = mealRes.rows[0];
-
-        // Create a unique token with expiry
-        const expiresAt = new Date(Date.now() + ATTENDANCE_QR_TTL_SECONDS * 1000);
-        const tokenPayload = {
-            meal_id: mealId,
-            meal_type: meal.meal_type,
-            date: meal.date,
-            generated_by: req.user.id,
-            generated_at: new Date().toISOString(),
-            expires_at: expiresAt.toISOString()
-        };
-
-        // Sign the token so students can verify it
-        const qrToken = jwt.sign(tokenPayload, JWT_SECRET, {
-            expiresIn: ATTENDANCE_QR_TTL_SECONDS
-        });
-
-        // Generate QR code as data URL
-        const qrPayload = JSON.stringify({ token: qrToken });
-        const qrImage = await QRCode.toDataURL(qrPayload, {
-            width: 400,
-            margin: 2,
-            color: { dark: '#000000', light: '#ffffff' }
-        });
-
-        res.json({
-            qr_image: qrImage,
-            token: qrToken,
-            meal_id: mealId,
-            meal_type: meal.meal_type,
-            expires_at: expiresAt.toISOString()
-        });
-    } catch (error) {
-        console.error('QR generation error:', error);
-        res.status(500).json({ error: 'QR generation failed' });
-    }
-});
-
-// POST /api/attendance — Mark attendance by scanning QR
-app.post('/api/attendance', authMiddleware, async (req, res) => {
-    console.log("ATTENDANCE MARK HIT");
-    try {
-        const { qr_token, qr_data } = req.body;
-        const userId = req.user.id;
-
-        if (!qr_token) {
-            return res.status(400).json({ error: 'Invalid QR — no token found' });
-        }
-
-        // Verify and decode the QR token
-        let decoded;
-        try {
-            decoded = jwt.verify(qr_token, JWT_SECRET);
-        } catch (err) {
-            if (err.name === 'TokenExpiredError') {
-                return res.status(410).json({ error: 'QR expired. Please ask for a new QR code.' });
-            }
-            return res.status(400).json({ error: 'Invalid QR code' });
-        }
-
-        const mealId = decoded.meal_id;
-        if (!mealId) {
-            return res.status(400).json({ error: 'Invalid QR — missing meal information' });
-        }
-
-        // Check the meal exists
-        const mealRes = await pool.query('SELECT id, meal_type, date FROM meals WHERE id = $1', [mealId]);
-        if (mealRes.rows.length === 0) {
-            return res.status(404).json({ error: 'Meal not found' });
-        }
-
-        // Check for duplicate attendance
-        const existing = await pool.query(
-            'SELECT id FROM attendance WHERE user_id = $1 AND meal_id = $2',
-            [userId, mealId]
-        );
-        if (existing.rows.length > 0) {
-            return res.status(409).json({ error: 'Attendance already marked for this meal' });
-        }
-
-        // Record attendance
-        const attendanceRes = await pool.query(
-            `INSERT INTO attendance (id, user_id, meal_id, scanned_at, qr_token_id)
-             VALUES (uuid_generate_v4(), $1, $2, NOW(), $3)
-             RETURNING id, user_id, meal_id, scanned_at`,
-            [userId, mealId, qr_token.substring(0, 36)]
-        );
-
-        // Update reward points
-        const POINTS_PER_MEAL = 10;
-        await pool.query(
-            `INSERT INTO student_rewards (user_id, points, total_meals, last_updated)
-             VALUES ($1, $2, 1, NOW())
-             ON CONFLICT (user_id) DO UPDATE
-             SET points = student_rewards.points + $2,
-                 total_meals = student_rewards.total_meals + 1,
-                 last_updated = NOW()`,
-            [userId, POINTS_PER_MEAL]
-        );
-
-        // Fetch updated rewards
-        const rewardsRes = await pool.query(
-            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
-            [userId]
-        );
-        const rewards = rewardsRes.rows[0] || { points: POINTS_PER_MEAL, total_meals: 1 };
-
-        // Calculate effective fee
-        const discount = Math.min(rewards.points, 50);
-        const effectiveFee = DEFAULT_MEAL_BASE_FEE - discount;
-
-        res.json({
-            message: 'Attendance recorded successfully',
-            ...attendanceRes.rows[0],
-            rewards: {
-                points: rewards.points,
-                total_meals: rewards.total_meals
-            },
-            fee_preview: {
-                base_fee: DEFAULT_MEAL_BASE_FEE,
-                discount,
-                effective_fee: effectiveFee
-            }
-        });
-    } catch (error) {
-        console.error('Attendance error:', error);
-        res.status(500).json({ error: 'Failed to mark attendance' });
-    }
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // START SERVER
