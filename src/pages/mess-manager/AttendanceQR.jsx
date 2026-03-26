@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Navigation from '../../components/layout/Navigation';
 import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
+import Toast from '../../components/common/Toast';
 import api from '../../lib/api';
 
 export default function AttendanceQR() {
@@ -9,10 +10,13 @@ export default function AttendanceQR() {
     const [selectedMealId, setSelectedMealId] = useState('');
     const [loading, setLoading] = useState(false);
     const [qrData, setQrData] = useState(null);
-    const [error, setError] = useState('');
+    const [mealWindow, setMealWindow] = useState(null);
+    const [toastMessage, setToastMessage] = useState('');
+    const [toastType, setToastType] = useState('info');
 
     useEffect(() => {
         fetchMeals();
+        fetchMealTimings();
     }, []);
 
     async function fetchMeals() {
@@ -24,62 +28,158 @@ export default function AttendanceQR() {
                 setSelectedMealId(data[0].id);
             }
         } catch (err) {
-            setError(err.message || 'Failed to load meals');
+            showToast(err.message || 'Failed to load meals', 'error');
+        }
+    }
+
+    async function fetchMealTimings() {
+        try {
+            const data = await api.get('/api/meal-timings/current');
+            setMealWindow(data);
+        } catch {
+            // non-blocking
         }
     }
 
     async function generateQr() {
         if (!selectedMealId) return;
         setLoading(true);
-        setError('');
+        setQrData(null);
         try {
             const data = await api.get(`/api/generate-qr/${selectedMealId}`);
             setQrData(data);
+            showToast(`QR generated for ${(data.meal_type || 'meal').toUpperCase()}`, 'success');
         } catch (err) {
-            setError(err.message || 'Failed to generate QR');
+            showToast(err.message || 'Failed to generate QR', 'error');
         } finally {
             setLoading(false);
         }
     }
 
+    function showToast(message, type = 'info') {
+        setToastMessage(message);
+        setToastType(type);
+    }
+
+    // Auto-refresh QR countdown
+    const [expiryCountdown, setExpiryCountdown] = useState('');
+    useEffect(() => {
+        if (!qrData?.expires_at) return undefined;
+        const interval = setInterval(() => {
+            const remaining = Math.max(0, Math.floor((new Date(qrData.expires_at) - Date.now()) / 1000));
+            if (remaining <= 0) {
+                setExpiryCountdown('Expired');
+                clearInterval(interval);
+            } else {
+                const m = Math.floor(remaining / 60);
+                const s = remaining % 60;
+                setExpiryCountdown(`${m}:${String(s).padStart(2, '0')}`);
+            }
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [qrData?.expires_at]);
+
     return (
         <div className="min-h-screen bg-black text-white selection:bg-creative-lime selection:text-black">
             <Navigation />
-            <main className="lg:ml-72 min-h-screen p-8 lg:p-12">
-                <div className="max-w-4xl mx-auto space-y-8">
-                    <Card variant="premium" className="p-8">
-                        <h1 className="text-4xl font-black italic tracking-tight uppercase mb-4">Attendance QR Generator</h1>
+            <main className="lg:ml-72 min-h-screen p-6 lg:p-12">
+                <div className="max-w-3xl mx-auto space-y-6">
+                    <Card variant="premium" className="p-6 sm:p-8">
+                        <h1 className="text-3xl sm:text-4xl font-black italic tracking-tight uppercase mb-2">Attendance QR Generator</h1>
                         <p className="text-sm text-white/50 font-medium">Generate a time-limited QR for active meal attendance.</p>
                     </Card>
 
-                    <Card variant="glass" className="p-8 space-y-6">
-                        <select
-                            value={selectedMealId}
-                            onChange={(e) => setSelectedMealId(e.target.value)}
-                            className="w-full rounded-xl bg-white/5 border border-white/10 p-4 text-sm font-bold"
-                        >
-                            {meals.map((meal) => (
-                                <option key={meal.id} value={meal.id}>
-                                    {String(meal.meal_type).toUpperCase()} | {meal.start_time?.slice(0, 5)}-{meal.end_time?.slice(0, 5)}
-                                </option>
-                            ))}
-                        </select>
-                        <Button onClick={generateQr} isLoading={loading} disabled={!selectedMealId}>
-                            GENERATE QR
+                    {/* Active Meal Indicator */}
+                    {mealWindow?.active_meal && (
+                        <div className="rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3 flex items-center gap-3">
+                            <span className="relative flex h-3 w-3">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-creative-lime opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-creative-lime"></span>
+                            </span>
+                            <p className="text-sm font-semibold text-creative-lime">
+                                {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} window active
+                                <span className="font-normal text-white/50 ml-2">
+                                    {mealWindow.active_meal.start_time_display} – {mealWindow.active_meal.end_time_display}
+                                </span>
+                            </p>
+                        </div>
+                    )}
+
+                    <Card variant="glass" className="p-6 sm:p-8 space-y-5">
+                        <div>
+                            <label className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2 block">Select Meal</label>
+                            <select
+                                value={selectedMealId}
+                                onChange={(e) => { setSelectedMealId(e.target.value); setQrData(null); }}
+                                className="w-full rounded-xl bg-white/5 border border-white/10 p-4 text-sm font-bold focus:border-creative-lime/50 focus:outline-none transition-colors"
+                            >
+                                {meals.map((meal) => (
+                                    <option key={meal.id} value={meal.id}>
+                                        {String(meal.meal_type).toUpperCase()} | {String(meal.start_time || '').slice(0, 5)} – {String(meal.end_time || '').slice(0, 5)}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <Button onClick={generateQr} isLoading={loading} disabled={!selectedMealId} className="w-full !min-h-[52px] !font-bold">
+                            🔑 GENERATE QR CODE
                         </Button>
-                        {error && <p className="text-sm text-red-400 font-bold uppercase tracking-widest">{error}</p>}
                     </Card>
 
                     {qrData?.qr_image && (
-                        <Card variant="glass" className="p-8 text-center">
-                            <img src={qrData.qr_image} alt="Meal Attendance QR" className="mx-auto w-72 h-72 rounded-2xl border border-white/10 bg-white p-3" />
-                            <p className="mt-4 text-sm text-white/60 font-bold uppercase tracking-wider">
-                                Expires: {new Date(qrData.expires_at).toLocaleTimeString()}
-                            </p>
+                        <Card variant="glass" className="p-6 sm:p-8 text-center">
+                            <img
+                                src={qrData.qr_image}
+                                alt="Meal Attendance QR"
+                                className="mx-auto w-72 h-72 sm:w-80 sm:h-80 rounded-2xl border border-white/10 bg-white p-3"
+                            />
+                            <div className="mt-4 space-y-1">
+                                <p className="text-lg font-bold text-creative-lime">
+                                    {(qrData.meal_type || 'meal').toUpperCase()}
+                                </p>
+                                {qrData.timing && (
+                                    <p className="text-sm text-white/50">
+                                        Window: {qrData.timing.start_display} – {qrData.timing.end_display}
+                                    </p>
+                                )}
+                                <p className={`text-sm font-bold uppercase tracking-wider ${
+                                    expiryCountdown === 'Expired' ? 'text-red-400' : 'text-white/60'
+                                }`}>
+                                    {expiryCountdown === 'Expired' ? '❌ EXPIRED — Generate a new QR' : `⏱ Expires in ${expiryCountdown}`}
+                                </p>
+                            </div>
+                        </Card>
+                    )}
+
+                    {/* Meal Schedule Reference */}
+                    {mealWindow?.all_timings && (
+                        <Card variant="glass" className="p-5">
+                            <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">Meal Schedule (IST)</h2>
+                            <div className="grid grid-cols-3 gap-2">
+                                {mealWindow.all_timings.map((t) => (
+                                    <div
+                                        key={t.meal_name}
+                                        className={`text-center rounded-xl px-3 py-3 ${
+                                            t.is_active
+                                                ? 'bg-creative-lime/15 border border-creative-lime/30 text-creative-lime'
+                                                : 'bg-white/5 text-white/40'
+                                        }`}
+                                    >
+                                        <p className="text-xs font-bold uppercase">{t.meal_name}</p>
+                                        <p className="text-sm mt-1">{t.start_time_display} – {t.end_time_display}</p>
+                                    </div>
+                                ))}
+                            </div>
                         </Card>
                     )}
                 </div>
             </main>
+
+            <Toast
+                message={toastMessage}
+                type={toastType}
+                duration={5000}
+                onClose={() => setToastMessage('')}
+            />
         </div>
     );
 }

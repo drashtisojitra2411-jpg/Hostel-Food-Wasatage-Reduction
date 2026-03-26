@@ -941,7 +941,7 @@ app.get('/api/meal-timings/current', async (req, res) => {
 });
 
 // GET /api/generate-qr/:mealId - Generate attendance QR (mess manager / hostel admin only)
-app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin']), async (req, res) => {
+app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
         const mealId = String(req.params.mealId || '').trim();
         if (!mealId) {
@@ -949,7 +949,7 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         }
 
         const mealRes = await pool.query(
-            "SELECT id, date, start_time, end_time, is_active FROM meals WHERE id = $1",
+            "SELECT id, meal_type, date, start_time, end_time, is_active FROM meals WHERE id = $1",
             [mealId]
         );
         if (mealRes.rows.length === 0) {
@@ -961,11 +961,30 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
             return res.status(400).json({ error: 'Meal is not active' });
         }
 
+        const mealType = normalizeMealType(meal.meal_type);
+
+        // Fetch authoritative timing from meal_timings table
+        let displayStart = String(meal.start_time || '').slice(0, 5);
+        let displayEnd = String(meal.end_time || '').slice(0, 5);
+        if (mealType) {
+            const timingRes = await pool.query(
+                'SELECT start_time, end_time FROM meal_timings WHERE meal_name = $1',
+                [mealType]
+            );
+            if (timingRes.rows.length > 0) {
+                displayStart = String(timingRes.rows[0].start_time).slice(0, 5);
+                displayEnd = String(timingRes.rows[0].end_time).slice(0, 5);
+            }
+        }
+
+        const ist = getISTNow();
         const token = jwt.sign(
             {
                 type: 'attendance_qr',
                 meal_id: meal.id,
-                issued_by: req.user.id
+                meal_type: mealType,
+                issued_by: req.user.id,
+                generated_at: ist.timeString,
             },
             JWT_SECRET,
             { expiresIn: ATTENDANCE_QR_TTL_SECONDS }
@@ -974,11 +993,20 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         const qrPayload = JSON.stringify({ qr_token: token, meal_id: meal.id });
         const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
 
+        console.log(`[QR] Generated for ${mealType} (${meal.id}), expires ${expiresAt.toISOString()}`);
+
         return res.json({
             meal_id: meal.id,
+            meal_type: mealType,
             qr_token: token,
             qr_image: qrImage,
-            expires_at: expiresAt.toISOString()
+            expires_at: expiresAt.toISOString(),
+            timing: {
+                start: displayStart,
+                end: displayEnd,
+                start_display: formatTime12h(displayStart),
+                end_display: formatTime12h(displayEnd),
+            }
         });
     } catch (error) {
         console.error('Generate QR error:', error);

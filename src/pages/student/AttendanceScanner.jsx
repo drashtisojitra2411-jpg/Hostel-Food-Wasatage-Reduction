@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import Navigation from '../../components/layout/Navigation'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
+import Toast from '../../components/common/Toast'
 import api from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
 
@@ -25,44 +26,6 @@ function extractToken(decodedText) {
     return raw
 }
 
-function mapScanError(message) {
-    const normalized = String(message || '').toLowerCase()
-
-    if (normalized.includes('permission') || normalized.includes('notallowederror')) {
-        return 'Camera permission denied. Allow camera access in browser settings and try again.'
-    }
-    if (normalized.includes('https') || normalized.includes('secure context')) {
-        return 'Camera access requires HTTPS on mobile browsers.'
-    }
-    if (normalized.includes('notfounderror')) {
-        return 'No camera found on this device.'
-    }
-    if (normalized.includes('notreadableerror') || normalized.includes('trackstart')) {
-        return 'Camera is busy in another app. Close it and try again.'
-    }
-
-    return 'Unable to start camera. Please try again.'
-}
-
-function mapAttendanceError(message) {
-    const normalized = String(message || '').toLowerCase()
-
-    if (normalized.includes('expired')) {
-        return 'QR expired. Please ask for a new QR code.'
-    }
-    if (normalized.includes('already marked')) {
-        return 'You have already marked attendance'
-    }
-    if (normalized.includes('outside meal window')) {
-        return 'Attendance is not available for this time window.'
-    }
-    if (normalized.includes('invalid qr')) {
-        return 'Invalid QR code. Please scan the official hostel QR.'
-    }
-
-    return message || 'Failed to mark attendance. Please try again.'
-}
-
 function stopMediaStream(stream) {
     if (!stream) return
     const tracks = stream.getTracks?.() || []
@@ -78,11 +41,14 @@ export default function AttendanceScanner() {
 
     const [isScanning, setIsScanning] = useState(false)
     const [isSubmitting, setIsSubmitting] = useState(false)
-    const [status, setStatus] = useState({ type: 'info', text: 'Tap start to open camera.' })
     const [success, setSuccess] = useState('')
-    const [toast, setToast] = useState('')
     const [lastAttendance, setLastAttendance] = useState(null)
     const [mealWindow, setMealWindow] = useState(null)
+
+    // Toast popup state
+    const [toastMessage, setToastMessage] = useState('')
+    const [toastType, setToastType] = useState('info')
+
     const isStudentRole = role === 'student'
     const isMealActive = Boolean(mealWindow?.active_meal)
 
@@ -107,6 +73,15 @@ export default function AttendanceScanner() {
         const interval = setInterval(fetchMealWindow, 60_000)
         return () => { cancelled = true; clearInterval(interval) }
     }, [])
+
+    function showToast(message, type = 'info') {
+        setToastMessage(message)
+        setToastType(type)
+    }
+
+    function clearToast() {
+        setToastMessage('')
+    }
 
     const ensureScanner = useCallback(async () => {
         if (!scannerCtorRef.current) {
@@ -137,7 +112,6 @@ export default function AttendanceScanner() {
 
         try {
             if (scanner?.isScanning) {
-                console.info('[AttendanceScanner] Stopping QR scanner')
                 await scanner.stop()
             }
             if (scanner) {
@@ -166,14 +140,12 @@ export default function AttendanceScanner() {
             throw new Error('Camera API not supported in this browser')
         }
 
-        console.info('[AttendanceScanner] Requesting camera permission')
         const stream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: 'environment' },
             audio: false
         })
 
         activeStreamRef.current = stream
-        console.info('[AttendanceScanner] Camera permission granted')
         stopMediaStream(stream)
         activeStreamRef.current = null
     }, [])
@@ -182,14 +154,12 @@ export default function AttendanceScanner() {
         const token = extractToken(decodedText)
 
         if (!token) {
-            setStatus({ type: 'error', text: 'Invalid QR payload. Please scan again.' })
+            showToast('Invalid QR code. Please scan a valid attendance QR.', 'error')
             scanLockedRef.current = false
             return
         }
 
         setIsSubmitting(true)
-        setStatus({ type: 'info', text: 'Marking attendance...' })
-        setSuccess('')
 
         try {
             const response = await api.post('/api/attendance', {
@@ -199,13 +169,22 @@ export default function AttendanceScanner() {
 
             setLastAttendance(response)
             setSuccess('Attendance successfully recorded')
-            setToast('Attendance successfully recorded')
-            setStatus({
-                type: 'success',
-                text: 'Attendance successfully recorded'
-            })
+            showToast('✅ Attendance successfully recorded!', 'success')
         } catch (error) {
-            setStatus({ type: 'error', text: mapAttendanceError(error?.message) })
+            const msg = error?.message || 'Failed to mark attendance'
+            const normalized = msg.toLowerCase()
+
+            if (normalized.includes('expired')) {
+                showToast('⏰ QR code has expired. Please ask for a new QR code.', 'warning')
+            } else if (normalized.includes('already marked') || normalized.includes('already')) {
+                showToast('You have already marked attendance for this meal.', 'warning')
+            } else if (normalized.includes('outside') || normalized.includes('allowed from')) {
+                showToast(msg, 'warning')
+            } else if (normalized.includes('invalid qr') || normalized.includes('invalid')) {
+                showToast('Invalid QR code. Please scan the official hostel QR.', 'error')
+            } else {
+                showToast(msg, 'error')
+            }
         } finally {
             setIsSubmitting(false)
             scanLockedRef.current = false
@@ -214,12 +193,17 @@ export default function AttendanceScanner() {
 
     const startScanner = useCallback(async () => {
         if (!isStudentRole) {
-            setStatus({ type: 'error', text: 'Only students can scan attendance' })
+            showToast('Only students can scan attendance.', 'error')
             return
         }
 
         if (!isSecureContext) {
-            setStatus({ type: 'error', text: 'Camera access requires HTTPS. Open this app over HTTPS.' })
+            showToast('Camera access requires HTTPS. Open this app over HTTPS.', 'error')
+            return
+        }
+
+        if (!isMealActive) {
+            showToast('No active meal right now. Check the schedule below.', 'warning')
             return
         }
 
@@ -230,7 +214,6 @@ export default function AttendanceScanner() {
         try {
             await requestCameraPermission()
 
-            console.info('[AttendanceScanner] Starting QR scanner with back camera')
             await scanner.start(
                 { facingMode: 'environment' },
                 {
@@ -254,19 +237,19 @@ export default function AttendanceScanner() {
 
             ensureVideoAttributes()
             setIsScanning(true)
-            setStatus({ type: 'info', text: 'Scanner active. Keep QR inside the frame.' })
         } catch (error) {
             console.error('[AttendanceScanner] Camera error:', error)
-            setStatus({ type: 'error', text: mapScanError(error?.message || error?.name) })
+            const normalized = String(error?.message || error?.name || '').toLowerCase()
+            if (normalized.includes('permission') || normalized.includes('notallowederror')) {
+                showToast('Camera permission denied. Allow camera access in browser settings.', 'error')
+            } else if (normalized.includes('notfounderror')) {
+                showToast('No camera found on this device.', 'error')
+            } else {
+                showToast('Unable to start camera. Please try again.', 'error')
+            }
             await stopScanner()
         }
-    }, [ensureScanner, ensureVideoAttributes, isScanning, isSecureContext, isStudentRole, isSubmitting, requestCameraPermission, stopScanner, submitAttendance])
-
-    useEffect(() => {
-        if (!toast) return undefined
-        const timer = setTimeout(() => setToast(''), 2500)
-        return () => clearTimeout(timer)
-    }, [toast])
+    }, [ensureScanner, ensureVideoAttributes, isMealActive, isScanning, isSecureContext, isStudentRole, isSubmitting, requestCameraPermission, stopScanner, submitAttendance])
 
     useEffect(() => {
         return () => {
@@ -279,141 +262,170 @@ export default function AttendanceScanner() {
             <Navigation />
 
             <main className="lg:ml-72 pt-20 pb-24 lg:py-8 px-3 sm:px-4 lg:px-10">
-                <div className="max-w-6xl mx-auto space-y-3 sm:space-y-4">
-                    <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
-                        <div className="flex items-start justify-between gap-3">
-                            <div>
-                                <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Scan Attendance QR</h1>
-                                <p className="text-sm text-white/70 mt-1">Open camera, scan hostel QR, and submit attendance instantly.</p>
-                            </div>
-                            <Link to="/dashboard" className="text-sm text-creative-lime hover:underline whitespace-nowrap">
-                                Back
-                            </Link>
-                        </div>
-                    </Card>
+                <div className="max-w-3xl mx-auto space-y-4">
 
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
-                        <Card variant="premium" className="rounded-2xl p-3 sm:p-4 lg:col-span-2" hover={false}>
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Scan Attendance</h1>
+                            <p className="text-sm text-white/60 mt-1">Point your camera at the meal QR code</p>
+                        </div>
+                        <Link to="/dashboard" className="text-sm text-creative-lime hover:underline whitespace-nowrap">
+                            ← Back
+                        </Link>
+                    </div>
+
+                    {/* Active Meal Status Bar */}
+                    {isMealActive && mealWindow?.active_meal && (
+                        <div className="rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3 flex items-center gap-3">
+                            <span className="relative flex h-3 w-3">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-creative-lime opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-creative-lime"></span>
+                            </span>
+                            <p className="text-sm font-semibold text-creative-lime">
+                                {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} is active
+                                <span className="font-normal text-white/50 ml-2">
+                                    {mealWindow.active_meal.start_time_display} – {mealWindow.active_meal.end_time_display}
+                                </span>
+                            </p>
+                        </div>
+                    )}
+
+                    {!isMealActive && mealWindow && (
+                        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+                            <p className="text-sm font-semibold text-yellow-300">
+                                {mealWindow.next_meal
+                                    ? `Next meal: ${mealWindow.next_meal.meal_name.charAt(0).toUpperCase() + mealWindow.next_meal.meal_name.slice(1)} starts at ${mealWindow.next_meal.start_time_display}${mealWindow.next_meal.is_tomorrow ? ' (tomorrow)' : ''}`
+                                    : 'No upcoming meals scheduled.'}
+                            </p>
+                            <p className="text-xs text-white/40 mt-1">Current IST: {mealWindow.current_time_ist}</p>
+                        </div>
+                    )}
+
+                    {/* Camera Section — Large and Centered */}
+                    <Card variant="premium" className="rounded-2xl p-3 sm:p-4" hover={false}>
+                        <div className="relative">
                             <div
                                 id={SCANNER_ID}
-                                className="w-full h-[62vh] sm:h-[68vh] lg:h-[70vh] max-h-[640px] rounded-2xl overflow-hidden bg-black border border-white/15"
+                                className="w-full aspect-square max-h-[65vh] rounded-2xl overflow-hidden bg-black/80 border border-white/10"
                             />
-
-                            <div className="grid grid-cols-2 gap-2 mt-3">
-                                <Button
-                                    onClick={startScanner}
-                                    disabled={!isSecureContext || !isStudentRole || isScanning || isSubmitting || !isMealActive}
-                                    className="w-full !min-h-[48px] !text-sm"
-                                >
-                                    {isSubmitting ? 'Recording...' : isScanning ? 'Scanning...' : 'Start Camera'}
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    onClick={stopScanner}
-                                    disabled={!isScanning}
-                                    className="w-full !min-h-[48px] !text-sm"
-                                >
-                                    Stop
-                                </Button>
-                            </div>
-                            {!isMealActive && mealWindow && (
-                                <div className="mt-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
-                                    <p className="text-sm font-semibold text-yellow-300">
-                                        {mealWindow.next_meal
-                                            ? `Next meal: ${mealWindow.next_meal.meal_name.charAt(0).toUpperCase() + mealWindow.next_meal.meal_name.slice(1)} starts at ${mealWindow.next_meal.start_time_display}${mealWindow.next_meal.is_tomorrow ? ' (tomorrow)' : ''}`
-                                            : 'No upcoming meals scheduled.'}
-                                    </p>
-                                    <p className="text-xs text-white/50 mt-1">Current IST: {mealWindow.current_time_ist}</p>
+                            {/* Scanning overlay indicator */}
+                            {isScanning && (
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-48 h-48 sm:w-56 sm:h-56 border-2 border-creative-lime/50 rounded-2xl animate-pulse" />
                                 </div>
                             )}
-                            {isMealActive && mealWindow?.active_meal && (
-                                <div className="mt-3 rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3">
-                                    <p className="text-sm font-semibold text-creative-lime">
-                                        {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} is active ({mealWindow.active_meal.start_time_display} – {mealWindow.active_meal.end_time_display})
-                                    </p>
-                                </div>
-                            )}
-                        </Card>
-
-                        <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
-                            <h2 className="text-lg font-semibold tracking-tight">How to scan</h2>
-                            <ul className="mt-3 space-y-2 text-sm text-white/75">
-                                <li>Use the hostel-issued QR only.</li>
-                                <li>Keep QR fully inside the frame.</li>
-                                <li>Hold camera steady for 1-2 seconds.</li>
-                                <li>If expired, request a fresh QR.</li>
-                            </ul>
-                            {mealWindow?.all_timings && (
-                                <div className="mt-4 border-t border-white/10 pt-3">
-                                    <h3 className="text-sm font-semibold text-white/80 mb-2">Meal Windows (IST)</h3>
-                                    <div className="space-y-1">
-                                        {mealWindow.all_timings.map((t) => (
-                                            <div key={t.meal_name} className={`text-xs px-2 py-1 rounded-lg flex justify-between ${
-                                                t.is_active ? 'bg-creative-lime/15 text-creative-lime font-bold' : 'text-white/50'
-                                            }`}>
-                                                <span>{t.meal_name.charAt(0).toUpperCase() + t.meal_name.slice(1)}</span>
-                                                <span>{t.start_time_display} – {t.end_time_display}</span>
-                                            </div>
-                                        ))}
+                            {/* Submitting overlay */}
+                            {isSubmitting && (
+                                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-2xl">
+                                    <div className="flex flex-col items-center gap-3">
+                                        <div className="w-10 h-10 border-3 border-creative-lime/30 border-t-creative-lime rounded-full animate-spin" />
+                                        <p className="text-sm font-semibold text-white/80">Recording attendance...</p>
                                     </div>
                                 </div>
                             )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 mt-3">
+                            <Button
+                                onClick={startScanner}
+                                disabled={!isSecureContext || !isStudentRole || isScanning || isSubmitting || !isMealActive}
+                                className="w-full !min-h-[52px] !text-sm !font-bold"
+                            >
+                                {isSubmitting ? '⏳ Recording...' : isScanning ? '📷 Scanning...' : '📸 Start Camera'}
+                            </Button>
+                            <Button
+                                variant="outline"
+                                onClick={stopScanner}
+                                disabled={!isScanning}
+                                className="w-full !min-h-[52px] !text-sm !font-bold"
+                            >
+                                ⏹ Stop
+                            </Button>
+                        </div>
+                    </Card>
+
+                    {/* Attendance Result */}
+                    {lastAttendance?.rewards && (
+                        <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
+                            <p className="text-sm font-semibold text-creative-lime mb-3">{success}</p>
+                            {lastAttendance?.scanned_at && (
+                                <p className="text-xs text-white/50 mb-3">
+                                    Recorded at: {new Date(lastAttendance.scanned_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+                                </p>
+                            )}
+                            <div className="grid grid-cols-3 gap-2">
+                                <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-center">
+                                    <p className="text-xs text-white/50">Points</p>
+                                    <p className="text-xl font-bold">{lastAttendance.rewards.points}</p>
+                                </div>
+                                <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-center">
+                                    <p className="text-xs text-white/50">Meals</p>
+                                    <p className="text-xl font-bold">{lastAttendance.rewards.total_meals}</p>
+                                </div>
+                                <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-center">
+                                    <p className="text-xs text-white/50">Fee</p>
+                                    <p className="text-xl font-bold">₹{lastAttendance?.fee_preview?.effective_fee ?? '-'}</p>
+                                </div>
+                            </div>
+                        </Card>
+                    )}
+
+                    {/* Instructions + Schedule (below camera) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
+                            <h2 className="text-base font-semibold tracking-tight mb-2">How to scan</h2>
+                            <ul className="space-y-1.5 text-sm text-white/65">
+                                <li>📌 Use the hostel-issued QR only</li>
+                                <li>📐 Keep QR fully inside the frame</li>
+                                <li>⏱ Hold camera steady for 1-2 seconds</li>
+                                <li>🔄 If expired, request a fresh QR</li>
+                            </ul>
                             {!isSecureContext && (
                                 <p className="text-xs text-yellow-300 mt-3">
-                                    Camera works only on HTTPS (or localhost in development).
+                                    ⚠ Camera works only on HTTPS (or localhost).
                                 </p>
                             )}
                             {!isStudentRole && (
                                 <p className="text-xs text-red-300 mt-3">
-                                    Only students can scan attendance
+                                    ⚠ Only students can scan attendance
                                 </p>
                             )}
                         </Card>
+
+                        <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
+                            <h2 className="text-base font-semibold tracking-tight mb-2">Meal Schedule (IST)</h2>
+                            {mealWindow?.all_timings ? (
+                                <div className="space-y-1.5">
+                                    {mealWindow.all_timings.map((t) => (
+                                        <div
+                                            key={t.meal_name}
+                                            className={`text-sm px-3 py-2 rounded-xl flex justify-between items-center ${
+                                                t.is_active
+                                                    ? 'bg-creative-lime/15 text-creative-lime font-bold border border-creative-lime/30'
+                                                    : 'text-white/50 bg-white/5'
+                                            }`}
+                                        >
+                                            <span>{t.meal_name.charAt(0).toUpperCase() + t.meal_name.slice(1)}</span>
+                                            <span className="text-xs">{t.start_time_display} – {t.end_time_display}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-sm text-white/40">Loading schedule...</p>
+                            )}
+                        </Card>
                     </div>
-
-                    <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
-                        {success && <p className="text-sm font-medium text-creative-lime mb-2">{success}</p>}
-                        <p
-                            className={`text-sm font-medium ${
-                                status.type === 'error'
-                                    ? 'text-red-300'
-                                    : status.type === 'success'
-                                    ? 'text-creative-lime'
-                                    : 'text-white/80'
-                            }`}
-                        >
-                            {status.text}
-                        </p>
-                        {lastAttendance?.scanned_at && (
-                            <p className="text-xs text-white/60 mt-2">
-                                Recorded at: {new Date(lastAttendance.scanned_at).toLocaleString()}
-                            </p>
-                        )}
-
-                        {lastAttendance?.rewards && (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
-                                <div className="rounded-xl border border-white/15 bg-white/5 px-3 py-3">
-                                    <p className="text-xs text-white/60">Points</p>
-                                    <p className="text-xl font-semibold">{lastAttendance.rewards.points}</p>
-                                </div>
-                                <div className="rounded-xl border border-white/15 bg-white/5 px-3 py-3">
-                                    <p className="text-xs text-white/60">Total Meals</p>
-                                    <p className="text-xl font-semibold">{lastAttendance.rewards.total_meals}</p>
-                                </div>
-                                <div className="rounded-xl border border-white/15 bg-white/5 px-3 py-3">
-                                    <p className="text-xs text-white/60">Effective Fee</p>
-                                    <p className="text-xl font-semibold">INR {lastAttendance?.fee_preview?.effective_fee ?? '-'}</p>
-                                </div>
-                            </div>
-                        )}
-                    </Card>
                 </div>
             </main>
-            {toast && (
-                <div className="fixed top-4 right-4 z-[60] rounded-xl border border-creative-lime/40 bg-black/90 px-4 py-3 text-sm text-creative-lime shadow-lg">
-                    {toast}
-                </div>
-            )}
+
+            {/* Centered Toast Popup */}
+            <Toast
+                message={toastMessage}
+                type={toastType}
+                duration={5000}
+                onClose={clearToast}
+            />
         </div>
     )
 }
