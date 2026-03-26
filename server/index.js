@@ -260,50 +260,98 @@ app.post('/api/auth/register', async (req, res) => {
 
 async function loginHandler(req, res) {
     try {
-        console.log('Login request received');
-        const { email, password } = req.body;
+        const { email, password } = req.body || {};
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+        const inputPassword = String(password || '');
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-        if (!email || !password) {
+        if (!normalizedEmail || !inputPassword) {
             return res.status(400).json({ error: 'Email and password are required' });
         }
 
-        const result = await pool.query(
-            `SELECT up.*, r.name as role_name, r.permissions,
-                    h.name as hostel_name, h.code as hostel_code
-             FROM user_profiles up
-             LEFT JOIN roles r ON up.role_id = r.id
-             LEFT JOIN hostels h ON up.hostel_id = h.id
-             WHERE up.email = $1`,
-            [email]
-        );
+        if (!emailRegex.test(normalizedEmail)) {
+            return res.status(400).json({ error: 'Please provide a valid email address' });
+        }
 
-        if (result.rows.length === 0) {
+        if (inputPassword.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+        }
+
+        let result;
+        try {
+            result = await pool.query(
+                `SELECT up.*, r.name as role_name, r.permissions,
+                        h.name as hostel_name, h.code as hostel_code
+                 FROM user_profiles up
+                 LEFT JOIN roles r ON up.role_id = r.id
+                 LEFT JOIN hostels h ON up.hostel_id = h.id
+                 WHERE LOWER(up.email) = $1`,
+                [normalizedEmail]
+            );
+        } catch (dbError) {
+            console.error('Login DB query failed:', dbError);
+            return res.status(500).json({ error: 'Database connection error' });
+        }
+
+        if (!result || !Array.isArray(result.rows) || result.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
         const user = result.rows[0];
+        if (!user || !user.password_hash || typeof user.password_hash !== 'string') {
+            console.error('Login failed: password hash missing or invalid for user', {
+                userId: user?.id || null,
+                email: normalizedEmail
+            });
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
 
-        const validPassword = await bcrypt.compare(password, user.password_hash);
+        let validPassword = false;
+        try {
+            validPassword = await bcrypt.compare(inputPassword, user.password_hash);
+        } catch (compareError) {
+            console.error('bcrypt.compare failed during login:', compareError);
+            return res.status(500).json({ error: 'Authentication failed' });
+        }
+
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
-        // Generate JWT
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role_name },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
+        const jwtSecret = process.env.JWT_SECRET;
+        if (!jwtSecret) {
+            console.error('JWT_SECRET is not set. Login token cannot be generated.');
+            return res.status(500).json({ error: 'Authentication service unavailable' });
+        }
 
-        // Build profile object (exclude password_hash)
-        const { password_hash, ...profile } = user;
-        profile.roles = { id: user.role_id, name: user.role_name || 'student', permissions: user.permissions };
-        profile.hostels = user.hostel_id ? { id: user.hostel_id, name: user.hostel_name, code: user.hostel_code } : null;
+        let token;
+        try {
+            token = jwt.sign(
+                { id: user.id, email: user.email, role: user.role_name || 'student' },
+                jwtSecret,
+                { expiresIn: '7d' }
+            );
+        } catch (tokenError) {
+            console.error('JWT token generation failed:', tokenError);
+            return res.status(500).json({ error: 'Authentication token generation failed' });
+        }
 
-        res.json({ token, user: { id: user.id, email: user.email }, profile });
+        const responseUser = {
+            id: user.id,
+            email: user.email,
+            full_name: user.full_name,
+            role: user.role_name || 'student',
+            hostel_id: user.hostel_id || null
+        };
+
+        return res.status(200).json({
+            success: true,
+            token,
+            user: responseUser
+        });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: error.message || 'Login failed' });
+        return res.status(500).json({ error: 'Internal server error' });
     }
 }
 
