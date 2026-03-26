@@ -4,7 +4,7 @@ import { getDashboardPath } from '../../components/ProtectedRoute'
 import { useAuth } from '../../context/AuthContext'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
-import { API_URL } from '../../lib/api'
+import api, { API_URL } from '../../lib/api'
 
 export default function Login() {
     const [email, setEmail] = useState('')
@@ -29,19 +29,8 @@ export default function Login() {
 
         setLoading(true)
         try {
-            const response = await fetch(`${API_URL}/api/login`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ email, password })
-            })
-
-            const data = await response.json().catch(() => ({}))
-            if (!response.ok) {
-                throw new Error(data?.error || data?.message || `Login failed (${response.status})`)
-            }
+            console.log("LOGIN REQUEST:", API_URL + "/api/login");
+            const data = await api.post('/api/login', { email, password })
 
             if (!data?.token) {
                 throw new Error('Login failed: missing token in response')
@@ -59,7 +48,7 @@ export default function Login() {
 
             setError(
                 isNetworkError
-                    ? 'Unable to reach the server. Please check VITE_API_URL and try again.'
+                    ? 'Unable to reach server'
                     : (err.message || 'Failed to sign in')
             )
         } finally {

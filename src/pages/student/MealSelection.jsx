@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Navigation from '../../components/layout/Navigation'
-import { API_URL } from '../../lib/api'
+import api from '../../lib/api'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -34,17 +34,7 @@ export default function FinalMenu() {
             setLoading(true)
             setError('')
             try {
-                const response = await fetch(`${API_URL}/api/final-menu`, {
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                })
-                const data = await response.json().catch(() => ({}))
-
-                if (!response.ok) {
-                    throw new Error(data?.error || data?.message || `Request failed (${response.status})`)
-                }
+                const data = await api.get('/api/final-menu')
 
                 if (mounted && data?.menu && typeof data.menu === 'object') {
                     setMenu({ ...fallbackMenu, ...data.menu })
@@ -69,7 +59,7 @@ export default function FinalMenu() {
         return () => {
             mounted = false
         }
-    }, [API_URL])
+    }, [])
 
     const cards = useMemo(() => DAYS.map((day) => ({ day, meals: menu?.[day] || fallbackMenu[day] })), [menu])
 

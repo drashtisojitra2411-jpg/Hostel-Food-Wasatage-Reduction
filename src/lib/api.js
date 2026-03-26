@@ -1,14 +1,13 @@
 import axios from 'axios';
 
-export const API_URL = (import.meta.env.VITE_API_URL || 'https://hfwr-server.onrender.com')
-    .trim()
-    .replace(/\/$/, '');
+export const API_URL = "https://hfwr-server.onrender.com";
 console.log("API URL:", API_URL);
 
 const apiClient = axios.create({
     baseURL: API_URL,
+    withCredentials: false,
     headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json"
     }
 });
 

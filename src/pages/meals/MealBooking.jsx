@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Button from '../../components/common/Button';
 import Card from '../../components/common/Card';
 import Notification from '../../components/common/Notification';
-import api, { API_URL } from '../../lib/api';
+import api from '../../lib/api';
 
 const MEAL_METADATA = {
     breakfast: { icon: '🍳', calories: 320, protein: '8g' },
@@ -30,12 +30,7 @@ export default function MealBooking() {
                     const [mealsData, bookingsData, finalMenuResponse] = await Promise.all([
                         api.get(`/api/meals?date=${dateStr}`),
                         api.get(`/api/meal-bookings?date=${dateStr}`),
-                        fetch(`${API_URL}/api/final-menu`, {
-                            credentials: 'include',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            }
-                        }).then((r) => r.json().catch(() => ({})))
+                        api.get('/api/final-menu')
                     ]);
 
                     const finalMenuMap = finalMenuResponse?.menu || {};
@@ -69,7 +64,7 @@ export default function MealBooking() {
             }
         }
         if (user) fetchData();
-    }, [selectedDate, user, API_URL]);
+    }, [selectedDate, user]);
 
     const toggleBooking = async (meal) => {
         const isBooked = bookings[meal.id];

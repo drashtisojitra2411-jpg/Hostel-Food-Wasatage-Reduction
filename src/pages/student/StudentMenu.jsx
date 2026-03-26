@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Navigation from '../../components/layout/Navigation'
-import { API_URL } from '../../lib/api'
+import api from '../../lib/api'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const MEAL_TYPES = ['breakfast', 'lunch', 'dinner']
@@ -19,42 +19,15 @@ export default function StudentMenu() {
     const now = new Date()
     const isVotingTime = now.getDay() === 4 && now.getHours() >= 6 && now.getHours() < 20
 
-    function getAuthHeaders() {
-        const token = localStorage.getItem('auth_token')
-        return token ? { Authorization: `Bearer ${token}` } : {}
-    }
-
     async function fetchMenuData() {
         setLoading(true)
         setError('')
         setSuccess('')
         try {
-            const [optionsRes, finalRes] = await Promise.all([
-                fetch(`${API_URL}/api/menu-options`, {
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...getAuthHeaders()
-                    }
-                }),
-                fetch(`${API_URL}/api/final-menu`, {
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...getAuthHeaders()
-                    }
-                })
+            const [optionsData, finalData] = await Promise.all([
+                api.get('/api/menu-options'),
+                api.get('/api/final-menu')
             ])
-
-            const optionsData = await optionsRes.json().catch(() => ({}))
-            const finalData = await finalRes.json().catch(() => ({}))
-
-            if (!optionsRes.ok) {
-                throw new Error(optionsData?.error || optionsData?.message || `menu-options failed (${optionsRes.status})`)
-            }
-            if (!finalRes.ok) {
-                throw new Error(finalData?.error || finalData?.message || `final-menu failed (${finalRes.status})`)
-            }
 
             setWeekStart(optionsData?.week_start || '')
             setMenuOptions(optionsData?.options || {})
@@ -71,7 +44,7 @@ export default function StudentMenu() {
 
     useEffect(() => {
         fetchMenuData()
-    }, [API_URL])
+    }, [])
 
     const totalSelected = useMemo(() => Object.keys(selectedVotes).length, [selectedVotes])
 
@@ -97,24 +70,12 @@ export default function StudentMenu() {
 
             for (const [key, selectedOption] of entries) {
                 const [day, mealType] = key.split('_')
-                const response = await fetch(`${API_URL}/api/vote`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...getAuthHeaders()
-                    },
-                    body: JSON.stringify({
-                        day,
-                        mealType,
-                        selectedOption,
-                        weekStart
-                    })
+                await api.post('/api/vote', {
+                    day,
+                    mealType,
+                    selectedOption,
+                    weekStart
                 })
-                const data = await response.json().catch(() => ({}))
-                if (!response.ok) {
-                    throw new Error(data?.error || data?.message || `Vote failed (${response.status})`)
-                }
             }
 
             setSuccess('Votes submitted successfully')
