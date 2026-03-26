@@ -4,6 +4,7 @@ import Navigation from '../../components/layout/Navigation'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
 import api from '../../lib/api'
+import { useAuth } from '../../context/AuthContext'
 
 const SCANNER_ID = 'student-attendance-scanner'
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
@@ -50,7 +51,7 @@ function mapAttendanceError(message) {
         return 'QR expired. Please ask for a new QR code.'
     }
     if (normalized.includes('already marked')) {
-        return 'Attendance already marked for this meal.'
+        return 'You have already marked attendance'
     }
     if (normalized.includes('outside meal window')) {
         return 'Attendance is not available for this time window.'
@@ -69,6 +70,7 @@ function stopMediaStream(stream) {
 }
 
 export default function AttendanceScanner() {
+    const { role } = useAuth()
     const scannerRef = useRef(null)
     const scannerCtorRef = useRef(null)
     const scanLockedRef = useRef(false)
@@ -77,7 +79,10 @@ export default function AttendanceScanner() {
     const [isScanning, setIsScanning] = useState(false)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [status, setStatus] = useState({ type: 'info', text: 'Tap start to open camera.' })
+    const [success, setSuccess] = useState('')
+    const [toast, setToast] = useState('')
     const [lastAttendance, setLastAttendance] = useState(null)
+    const isStudentRole = role === 'student'
 
     const isSecureContext = useMemo(() => {
         const protocol = window.location.protocol
@@ -166,6 +171,7 @@ export default function AttendanceScanner() {
 
         setIsSubmitting(true)
         setStatus({ type: 'info', text: 'Marking attendance...' })
+        setSuccess('')
 
         try {
             const response = await api.post('/api/attendance', {
@@ -174,9 +180,11 @@ export default function AttendanceScanner() {
             })
 
             setLastAttendance(response)
+            setSuccess('Attendance successfully recorded')
+            setToast('Attendance successfully recorded')
             setStatus({
                 type: 'success',
-                text: response?.message || 'Attendance marked successfully.'
+                text: 'Attendance successfully recorded'
             })
         } catch (error) {
             setStatus({ type: 'error', text: mapAttendanceError(error?.message) })
@@ -187,6 +195,11 @@ export default function AttendanceScanner() {
     }, [])
 
     const startScanner = useCallback(async () => {
+        if (!isStudentRole) {
+            setStatus({ type: 'error', text: 'Only students can scan attendance' })
+            return
+        }
+
         if (!isSecureContext) {
             setStatus({ type: 'error', text: 'Camera access requires HTTPS. Open this app over HTTPS.' })
             return
@@ -229,7 +242,13 @@ export default function AttendanceScanner() {
             setStatus({ type: 'error', text: mapScanError(error?.message || error?.name) })
             await stopScanner()
         }
-    }, [ensureScanner, ensureVideoAttributes, isScanning, isSecureContext, isSubmitting, requestCameraPermission, stopScanner, submitAttendance])
+    }, [ensureScanner, ensureVideoAttributes, isScanning, isSecureContext, isStudentRole, isSubmitting, requestCameraPermission, stopScanner, submitAttendance])
+
+    useEffect(() => {
+        if (!toast) return undefined
+        const timer = setTimeout(() => setToast(''), 2500)
+        return () => clearTimeout(timer)
+    }, [toast])
 
     useEffect(() => {
         return () => {
@@ -265,10 +284,10 @@ export default function AttendanceScanner() {
                             <div className="grid grid-cols-2 gap-2 mt-3">
                                 <Button
                                     onClick={startScanner}
-                                    disabled={!isSecureContext || isScanning || isSubmitting}
+                                    disabled={!isSecureContext || !isStudentRole || isScanning || isSubmitting}
                                     className="w-full !min-h-[48px] !text-sm"
                                 >
-                                    {isScanning ? 'Scanning...' : 'Start Camera'}
+                                    {isSubmitting ? 'Recording...' : isScanning ? 'Scanning...' : 'Start Camera'}
                                 </Button>
                                 <Button
                                     variant="outline"
@@ -294,10 +313,16 @@ export default function AttendanceScanner() {
                                     Camera works only on HTTPS (or localhost in development).
                                 </p>
                             )}
+                            {!isStudentRole && (
+                                <p className="text-xs text-red-300 mt-3">
+                                    Only students can scan attendance
+                                </p>
+                            )}
                         </Card>
                     </div>
 
                     <Card variant="glass" className="rounded-2xl p-4 sm:p-5" hover={false}>
+                        {success && <p className="text-sm font-medium text-creative-lime mb-2">{success}</p>}
                         <p
                             className={`text-sm font-medium ${
                                 status.type === 'error'
@@ -309,6 +334,11 @@ export default function AttendanceScanner() {
                         >
                             {status.text}
                         </p>
+                        {lastAttendance?.scanned_at && (
+                            <p className="text-xs text-white/60 mt-2">
+                                Recorded at: {new Date(lastAttendance.scanned_at).toLocaleString()}
+                            </p>
+                        )}
 
                         {lastAttendance?.rewards && (
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
@@ -329,6 +359,11 @@ export default function AttendanceScanner() {
                     </Card>
                 </div>
             </main>
+            {toast && (
+                <div className="fixed top-4 right-4 z-[60] rounded-xl border border-creative-lime/40 bg-black/90 px-4 py-3 text-sm text-creative-lime shadow-lg">
+                    {toast}
+                </div>
+            )}
         </div>
     )
 }

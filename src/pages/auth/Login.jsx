@@ -36,7 +36,7 @@ export default function Login() {
                 throw new Error('Login failed: missing token in response')
             }
 
-            const resolvedRole = applyLoginPayload(data) || data?.profile?.roles?.name?.toLowerCase() || 'student'
+            const resolvedRole = applyLoginPayload(data)
             const nextPath = from || getDashboardPath(resolvedRole)
             navigate(nextPath, { replace: true })
         } catch (err) {

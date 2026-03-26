@@ -3,6 +3,7 @@ import cors from 'cors';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import QRCode from 'qrcode';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from "dotenv";
@@ -45,6 +46,8 @@ const pool = new pg.Pool({
 
 const MENU_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MENU_MEALS = ['breakfast', 'lunch', 'dinner'];
+const ATTENDANCE_QR_TTL_SECONDS = 300;
+const DEFAULT_MEAL_BASE_FEE = 120;
 const DEFAULT_MENU_OPTIONS = {
     Monday: {
         breakfast: ['Poha', 'Upma', 'Sandwich', 'Idli Sambar'],
@@ -102,6 +105,10 @@ function normalizeMealType(mealType) {
     return MENU_MEALS.includes(value) ? value : '';
 }
 
+function normalizeRole(role) {
+    return String(role || '').trim().toLowerCase();
+}
+
 async function ensureMenuVotingTable() {
     await pool.query(
         `CREATE TABLE IF NOT EXISTS menu_votes (
@@ -121,10 +128,33 @@ async function ensureMenuVotingTable() {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_menu_votes_day_meal ON menu_votes(day, meal_type)');
 }
 
+async function ensureAttendanceTables() {
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS student_rewards (
+            user_id UUID PRIMARY KEY REFERENCES user_profiles(id) ON DELETE CASCADE,
+            points INTEGER NOT NULL DEFAULT 0 CHECK (points >= 0),
+            total_meals INTEGER NOT NULL DEFAULT 0 CHECK (total_meals >= 0),
+            last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`
+    );
+
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS attendance (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+            meal_id UUID NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+            scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            qr_token_id TEXT,
+            UNIQUE(user_id, meal_id)
+        )`
+    );
+}
+
 // Test DB connection on startup
 pool.query('SELECT NOW()')
     .then(async () => {
         await ensureMenuVotingTable();
+        await ensureAttendanceTables();
         console.log('✅ Database connected');
     })
     .catch(err => console.error('❌ Database connection failed:', err.message));
@@ -144,7 +174,7 @@ function authMiddleware(req, res, next) {
     try {
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
+        req.user = { ...decoded, role: normalizeRole(decoded?.role) };
         next();
     } catch {
         return res.status(401).json({ error: 'Invalid or expired token' });
@@ -156,22 +186,25 @@ function optionalAuth(req, res, next) {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
         try {
-            req.user = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+            const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+            req.user = { ...decoded, role: normalizeRole(decoded?.role) };
         } catch { /* ignore */ }
     }
     next();
 }
 
 function requireSuperAdmin(req, res, next) {
-    if (!req.user || req.user.role !== 'super_admin') {
+    if (!req.user || normalizeRole(req.user.role) !== 'super_admin') {
         return res.status(403).json({ error: 'Super admin access required' });
     }
     next();
 }
 
 function requireRole(roles = []) {
+    const allowed = new Set(roles.map((role) => normalizeRole(role)));
     return (req, res, next) => {
-        if (!req.user || !roles.includes(req.user.role)) {
+        const userRole = normalizeRole(req.user?.role);
+        if (!req.user || !allowed.has(userRole)) {
             return res.status(403).json({ error: 'Insufficient role permissions' });
         }
         next();
@@ -324,10 +357,12 @@ async function loginHandler(req, res) {
             return res.status(500).json({ error: 'Authentication service unavailable' });
         }
 
+        const resolvedRole = normalizeRole(user.role_name) || 'student';
+
         let token;
         try {
             token = jwt.sign(
-                { id: user.id, email: user.email, role: user.role_name || 'student' },
+                { id: user.id, email: user.email, role: resolvedRole },
                 jwtSecret,
                 { expiresIn: '7d' }
             );
@@ -340,14 +375,18 @@ async function loginHandler(req, res) {
             id: user.id,
             email: user.email,
             full_name: user.full_name,
-            role: user.role_name || 'student',
+            role: resolvedRole,
             hostel_id: user.hostel_id || null
         };
+        const { password_hash, ...profile } = user;
+        profile.roles = { id: user.role_id, name: resolvedRole, permissions: user.permissions };
+        profile.hostels = user.hostel_id ? { id: user.hostel_id, name: user.hostel_name, code: user.hostel_code } : null;
 
         return res.status(200).json({
             success: true,
             token,
-            user: responseUser
+            user: responseUser,
+            profile
         });
     } catch (error) {
         console.error('Login error:', error);
@@ -380,7 +419,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 
         const user = result.rows[0];
         const { password_hash, ...profile } = user;
-        profile.roles = { id: user.r_id, name: user.role_name, permissions: user.permissions };
+        profile.roles = { id: user.r_id, name: normalizeRole(user.role_name), permissions: user.permissions };
         profile.hostels = user.hostel_id ? { id: user.hostel_id, name: user.hostel_name, code: user.hostel_code } : null;
 
         res.json({
@@ -441,7 +480,7 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
 
         const user = result.rows[0];
         const { password_hash, ...profile } = user;
-        profile.roles = { id: user.r_id, name: user.role_name, permissions: user.permissions };
+        profile.roles = { id: user.r_id, name: normalizeRole(user.role_name), permissions: user.permissions };
         profile.hostels = user.hostel_id ? { id: user.hostel_id, name: user.hostel_name, code: user.hostel_code } : null;
 
         res.json(profile);
@@ -768,6 +807,218 @@ app.get('/api/meals', async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch meals' });
+    }
+});
+
+// GET /api/generate-qr/:mealId - Generate attendance QR (mess manager / hostel admin only)
+app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin']), async (req, res) => {
+    try {
+        const mealId = String(req.params.mealId || '').trim();
+        if (!mealId) {
+            return res.status(400).json({ error: 'mealId is required' });
+        }
+
+        const mealRes = await pool.query(
+            "SELECT id, date, start_time, end_time, is_active FROM meals WHERE id = $1",
+            [mealId]
+        );
+        if (mealRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Meal not found' });
+        }
+
+        const meal = mealRes.rows[0];
+        if (!meal.is_active) {
+            return res.status(400).json({ error: 'Meal is not active' });
+        }
+
+        const token = jwt.sign(
+            {
+                type: 'attendance_qr',
+                meal_id: meal.id,
+                issued_by: req.user.id
+            },
+            JWT_SECRET,
+            { expiresIn: ATTENDANCE_QR_TTL_SECONDS }
+        );
+        const expiresAt = new Date(Date.now() + ATTENDANCE_QR_TTL_SECONDS * 1000);
+        const qrPayload = JSON.stringify({ qr_token: token, meal_id: meal.id });
+        const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
+
+        return res.json({
+            meal_id: meal.id,
+            qr_token: token,
+            qr_image: qrImage,
+            expires_at: expiresAt.toISOString()
+        });
+    } catch (error) {
+        console.error('Generate QR error:', error);
+        return res.status(500).json({ error: 'Failed to generate QR' });
+    }
+});
+
+// POST /api/attendance - Scan and mark attendance (student only)
+app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req, res) => {
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+        let { qr_token, qr_data } = req.body || {};
+        if (!qr_token && qr_data) {
+            const raw = String(qr_data || '').trim();
+            if (raw.startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    qr_token = parsed?.qr_token || parsed?.token || qr_token;
+                } catch {
+                    qr_token = raw;
+                }
+            } else {
+                qr_token = raw;
+            }
+        }
+
+        if (!qr_token) {
+            return res.status(400).json({ error: 'Invalid QR payload' });
+        }
+
+        let payload;
+        try {
+            payload = jwt.verify(qr_token, JWT_SECRET);
+        } catch (error) {
+            if (error?.name === 'TokenExpiredError') {
+                return res.status(400).json({ error: 'QR expired' });
+            }
+            return res.status(400).json({ error: 'Invalid QR code' });
+        }
+
+        if (payload?.type !== 'attendance_qr' || !payload?.meal_id) {
+            return res.status(400).json({ error: 'Invalid QR code' });
+        }
+
+        const mealRes = await client.query(
+            `SELECT id, date, start_time, end_time, is_active,
+                    CURRENT_DATE = date AS is_today,
+                    CURRENT_TIME BETWEEN start_time AND end_time AS within_window
+             FROM meals
+             WHERE id = $1`,
+            [payload.meal_id]
+        );
+        if (mealRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Meal not found for QR' });
+        }
+
+        const meal = mealRes.rows[0];
+        if (!meal.is_active) {
+            return res.status(400).json({ error: 'Meal is not active' });
+        }
+        if (!meal.is_today) {
+            return res.status(400).json({ error: 'Invalid QR for current date' });
+        }
+        if (!meal.within_window) {
+            return res.status(400).json({ error: 'Outside meal window' });
+        }
+
+        await client.query('BEGIN');
+        transactionStarted = true;
+
+        let attendance;
+        try {
+            const insertRes = await client.query(
+                `INSERT INTO attendance (user_id, meal_id, qr_token_id)
+                 VALUES ($1, $2, $3)
+                 RETURNING id, scanned_at`,
+                [req.user.id, meal.id, payload.iat ? String(payload.iat) : null]
+            );
+            attendance = insertRes.rows[0];
+        } catch (error) {
+            if (error.code === '23505') {
+                await client.query('ROLLBACK');
+                transactionStarted = false;
+                return res.status(409).json({ error: 'You have already marked attendance' });
+            }
+            throw error;
+        }
+
+        await client.query(
+            `INSERT INTO student_rewards (user_id, points, total_meals, last_updated)
+             VALUES ($1, 10, 1, NOW())
+             ON CONFLICT (user_id)
+             DO UPDATE SET
+                points = student_rewards.points + 10,
+                total_meals = student_rewards.total_meals + 1,
+                last_updated = NOW()
+             RETURNING points, total_meals`,
+            [req.user.id]
+        );
+
+        await client.query(
+            `UPDATE meal_bookings
+             SET checked_in_at = COALESCE(checked_in_at, NOW()),
+                 status = CASE WHEN status = 'confirmed' THEN 'consumed' ELSE status END,
+                 updated_at = NOW()
+             WHERE user_id = $1 AND meal_id = $2`,
+            [req.user.id, meal.id]
+        );
+
+        const rewardsRes = await client.query(
+            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
+            [req.user.id]
+        );
+        const rewards = rewardsRes.rows[0] || { points: 0, total_meals: 0 };
+        const discountPercent = Math.min(25, Math.max(0, Math.floor((Number(rewards.points) || 0) / 100)));
+        const effectiveFee = Number((DEFAULT_MEAL_BASE_FEE * (1 - discountPercent / 100)).toFixed(2));
+
+        await client.query('COMMIT');
+        transactionStarted = false;
+        return res.json({
+            message: 'Attendance successfully recorded',
+            scanned_at: attendance.scanned_at,
+            rewards: {
+                points: Number(rewards.points) || 0,
+                total_meals: Number(rewards.total_meals) || 0
+            },
+            fee_preview: {
+                base_fee: DEFAULT_MEAL_BASE_FEE,
+                discount_percent: discountPercent,
+                effective_fee: effectiveFee
+            }
+        });
+    } catch (error) {
+        if (transactionStarted) {
+            await client.query('ROLLBACK');
+        }
+        console.error('Attendance scan error:', error);
+        return res.status(500).json({ error: 'Failed to mark attendance' });
+    } finally {
+        client.release();
+    }
+});
+
+// GET /api/rewards/summary - current student's reward summary
+app.get('/api/rewards/summary', authMiddleware, requireRole(['student']), async (req, res) => {
+    try {
+        const rewardsRes = await pool.query(
+            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
+            [req.user.id]
+        );
+        const rewards = rewardsRes.rows[0] || { points: 0, total_meals: 0 };
+        const points = Number(rewards.points) || 0;
+        const discountPercent = Math.min(25, Math.max(0, Math.floor(points / 100)));
+        const effectiveFee = Number((DEFAULT_MEAL_BASE_FEE * (1 - discountPercent / 100)).toFixed(2));
+
+        return res.json({
+            rewards: {
+                points,
+                total_meals: Number(rewards.total_meals) || 0
+            },
+            fee_preview: {
+                base_fee: DEFAULT_MEAL_BASE_FEE,
+                discount_percent: discountPercent,
+                effective_fee: effectiveFee
+            }
+        });
+    } catch (error) {
+        console.error('Rewards summary error:', error);
+        return res.status(500).json({ error: 'Failed to fetch rewards summary' });
     }
 });
 

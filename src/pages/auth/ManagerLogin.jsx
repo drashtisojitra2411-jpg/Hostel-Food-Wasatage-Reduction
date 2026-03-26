@@ -39,7 +39,7 @@ export default function ManagerLogin() {
 
         try {
             const data = await signIn({ email, password })
-            const nextPath = from || getDashboardPath(data?.profile?.roles?.name?.toLowerCase())
+            const nextPath = from || getDashboardPath(data?.profile?.roles?.name?.toLowerCase() || data?.user?.role?.toLowerCase())
             navigate(nextPath, { replace: true })
         } catch (err) {
             setError(err.message || 'Failed to authorize command')

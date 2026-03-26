@@ -97,7 +97,7 @@ export default function StudentDashboard() {
                         </div>
                         <div className="grid grid-cols-2 md:flex gap-2">
                             <Button variant="outline" size="sm" className="!min-h-[44px]" onClick={() => navigate('/student/menu')}>Menu</Button>
-                            <Button size="sm" className="!min-h-[44px]" onClick={() => navigate('/attendance/scan')}>Scan QR</Button>
+                            <Button size="sm" className="!min-h-[44px]" onClick={() => navigate('/scan-attendance')}>Scan QR</Button>
                             <Button variant="ghost" size="sm" className="!min-h-[44px] col-span-2 md:col-span-1" onClick={handleLogout}>Logout</Button>
                         </div>
                     </header>

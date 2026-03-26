@@ -29,7 +29,7 @@ export function ProtectedRoute({ children, allowedRoles = [] }) {
 
     // Role check (if roles specified)
     if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
-        return <Navigate to="/unauthorized" replace />
+        return <Navigate to={getDashboardPath(role)} replace />
     }
 
     return children

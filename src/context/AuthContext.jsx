@@ -3,6 +3,16 @@ import api from '../lib/api'
 
 const AuthContext = createContext({})
 
+function resolveRole(payload) {
+    const rawRole =
+        payload?.profile?.roles?.name ??
+        payload?.roles?.name ??
+        payload?.user?.role ??
+        payload?.role
+    const normalized = String(rawRole || '').trim().toLowerCase()
+    return normalized || null
+}
+
 export const useAuth = () => useContext(AuthContext)
 
 export function AuthProvider({ children }) {
@@ -31,7 +41,7 @@ export function AuthProvider({ children }) {
                 .then((data) => {
                     setUser(data?.user || null)
                     setProfile(data?.profile || null)
-                    setRole(data?.profile?.roles?.name?.toLowerCase() || 'student')
+                    setRole(resolveRole(data))
                 })
                 .catch((err) => {
                     console.error('Session validation error:', err)
@@ -54,7 +64,7 @@ export function AuthProvider({ children }) {
             const profileData = await api.get('/api/profile')
             if (profileData) {
                 setProfile(profileData)
-                setRole(profileData.roles?.name?.toLowerCase() || 'student')
+                setRole(resolveRole(profileData))
             }
         } catch (error) {
             console.error('Profile fetch error:', error)
@@ -91,7 +101,7 @@ export function AuthProvider({ children }) {
         api.setToken(data?.token || null)
         setUser(data?.user || null)
         setProfile(data?.profile || null)
-        const resolvedRole = data?.profile?.roles?.name?.toLowerCase() || 'student'
+        const resolvedRole = resolveRole(data)
         setRole(resolvedRole)
         return resolvedRole
     }

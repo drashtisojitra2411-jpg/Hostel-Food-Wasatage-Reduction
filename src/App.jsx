@@ -71,6 +71,7 @@ export default function App() {
                 <Route path="/history" element={<ProtectedRoute allowedRoles={['student']}><History /></ProtectedRoute>} />
                 <Route path="/meal-selection" element={<ProtectedRoute allowedRoles={['student', 'mess_manager', 'super_admin']}><MealSelection /></ProtectedRoute>} />
                 <Route path="/attendance/scan" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
+                <Route path="/scan-attendance" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
 
                 <Route path="/mess-manager" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><MessManagerDashboard /></ProtectedRoute>} />
                 <Route path="/chef" element={<ProtectedRoute allowedRoles={['chef', 'super_admin']}><ChefDashboard /></ProtectedRoute>} />
@@ -81,7 +82,8 @@ export default function App() {
                 <Route path="/mess-manager/menu" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><MenuManager /></ProtectedRoute>} />
                 <Route path="/mess-manager/reports" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><Reports /></ProtectedRoute>} />
                 <Route path="/mess-manager/donations" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><Donations /></ProtectedRoute>} />
-                <Route path="/mess-manager/attendance-qr" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin', 'chef']}><AttendanceQR /></ProtectedRoute>} />
+                <Route path="/mess-manager/attendance-qr" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin']}><AttendanceQR /></ProtectedRoute>} />
+                <Route path="/generate-qr" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin']}><AttendanceQR /></ProtectedRoute>} />
 
                 <Route path="/admin" element={<ProtectedRoute allowedRoles={['super_admin']}><Console /></ProtectedRoute>} />
                 <Route path="/admin/personnel" element={<ProtectedRoute allowedRoles={['super_admin']}><Personnel /></ProtectedRoute>} />

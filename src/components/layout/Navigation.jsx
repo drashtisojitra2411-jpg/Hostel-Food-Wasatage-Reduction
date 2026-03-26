@@ -6,7 +6,7 @@ const studentLinks = [
     { path: '/dashboard', label: 'Dashboard', shortLabel: 'Home' },
     { path: '/student/menu', label: 'Menu', shortLabel: 'Menu' },
     { path: '/meal-booking', label: 'Meal Booking', shortLabel: 'Book' },
-    { path: '/attendance/scan', label: 'Scan Attendance', shortLabel: 'Scan' },
+    { path: '/scan-attendance', label: 'Scan Attendance', shortLabel: 'Scan' },
     { path: '/history', label: 'History', shortLabel: 'History' },
     { path: '/impact', label: 'My Impact', shortLabel: 'Impact' },
     { path: '/settings', label: 'Profile', shortLabel: 'Profile' }
@@ -16,7 +16,7 @@ const messManagerLinks = [
     { path: '/mess-manager', label: 'Dashboard', shortLabel: 'Home' },
     { path: '/mess-manager/inventory', label: 'Inventory', shortLabel: 'Inventory' },
     { path: '/mess-manager/menu', label: 'Menu Manager', shortLabel: 'Menu' },
-    { path: '/mess-manager/attendance-qr', label: 'Attendance QR', shortLabel: 'QR' },
+    { path: '/generate-qr', label: 'Generate QR', shortLabel: 'QR' },
     { path: '/meal-selection', label: 'Week Menu', shortLabel: 'Week' },
     { path: '/mess-manager/wastage/log', label: 'Wastage Log', shortLabel: 'Wastage' },
     { path: '/mess-manager/donations', label: 'Donations', shortLabel: 'Donations' },
@@ -44,13 +44,13 @@ const ngoLinks = [
 
 const studentBottomLinks = [
     { path: '/student/menu', label: 'Menu' },
-    { path: '/attendance/scan', label: 'Scan' },
+    { path: '/scan-attendance', label: 'Scan' },
     { path: '/settings', label: 'Profile' }
 ]
 
 export default function Navigation({ customLinks = null, activeItem = '', onItemSelect = null }) {
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
-    const { profile, role, isMessManager, isSuperAdmin, isChef, isNgo, isStudent, signOut } = useAuth()
+    const { profile, role, isMessManager, isHostelAdmin, isSuperAdmin, isChef, isNgo, isStudent, signOut } = useAuth()
     const location = useLocation()
     const navigate = useNavigate()
 
@@ -64,9 +64,9 @@ export default function Navigation({ customLinks = null, activeItem = '', onItem
         if (isSuperAdmin()) return adminLinks
         if (isChef()) return chefLinks
         if (isNgo()) return ngoLinks
-        if (isMessManager()) return messManagerLinks
+        if (isMessManager() || isHostelAdmin()) return messManagerLinks
         return studentLinks
-    }, [customLinks, isSuperAdmin, isChef, isNgo, isMessManager])
+    }, [customLinks, isSuperAdmin, isChef, isNgo, isMessManager, isHostelAdmin])
 
     const isStudentRole = isStudent()
 
@@ -120,7 +120,7 @@ export default function Navigation({ customLinks = null, activeItem = '', onItem
                         <p className="text-xs uppercase tracking-[0.2em] text-white/50">Signed In</p>
                         <p className="mt-2 text-white font-semibold truncate">{profile?.full_name || 'Student User'}</p>
                         <p className="text-xs text-white/50 truncate">{profile?.email || 'No email available'}</p>
-                        <p className="text-[11px] mt-2 text-creative-lime uppercase tracking-wide">{role || 'student'}</p>
+                        <p className="text-[11px] mt-2 text-creative-lime uppercase tracking-wide">{role || 'unknown'}</p>
                     </div>
 
                     <nav className="flex-1 overflow-y-auto px-3 py-4">
