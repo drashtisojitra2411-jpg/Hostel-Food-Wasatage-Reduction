@@ -1,19 +1,10 @@
 import axios from 'axios';
 
 export const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
-
-function resolveApiBaseUrl() {
-    if (!API_URL) {
-        return '/';
-    }
-
-    return API_URL;
-}
-
-export const API_BASE_URL = resolveApiBaseUrl();
+console.log(API_URL);
 
 const apiClient = axios.create({
-    baseURL: API_BASE_URL,
+    baseURL: API_URL,
     withCredentials: true,
     headers: {
         'Content-Type': 'application/json'
@@ -107,7 +98,7 @@ const api = {
     getToken,
     setToken,
     hasToken: () => Boolean(getToken()),
-    baseURL: API_BASE_URL
+    baseURL: API_URL
 };
 
 export default api;

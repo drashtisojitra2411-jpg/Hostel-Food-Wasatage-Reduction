@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Navigation from '../../components/layout/Navigation'
+import { API_URL } from '../../lib/api'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -20,7 +21,6 @@ const mealMeta = {
 }
 
 export default function FinalMenu() {
-    const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
     const [menu, setMenu] = useState(fallbackMenu)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')

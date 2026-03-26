@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Button from '../../components/common/Button';
 import Card from '../../components/common/Card';
 import Notification from '../../components/common/Notification';
-import api from '../../lib/api';
+import api, { API_URL } from '../../lib/api';
 
 const MEAL_METADATA = {
     breakfast: { icon: '🍳', calories: 320, protein: '8g' },
@@ -19,8 +19,6 @@ export default function MealBooking() {
     const [meals, setMeals] = useState([]);
     const [loading, setLoading] = useState(true);
     const [notification, setNotification] = useState({ show: false, message: '', type: 'info' });
-    const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
-
     // Fetch bookings and merge with voting results
     useEffect(() => {
         async function fetchData() {

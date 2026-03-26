@@ -4,8 +4,7 @@ import { getDashboardPath } from '../../components/ProtectedRoute'
 import { useAuth } from '../../context/AuthContext'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
-
-const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
+import { API_URL } from '../../lib/api'
 
 export default function Login() {
     const [email, setEmail] = useState('')
