@@ -2100,6 +2100,153 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// QR CODE GENERATION & ATTENDANCE
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /api/generate-qr/:mealId — Generate a time-limited attendance QR for a meal
+app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
+    console.log("QR GENERATE HIT");
+    try {
+        const { mealId } = req.params;
+
+        // Verify the meal exists
+        const mealRes = await pool.query('SELECT id, meal_type, date FROM meals WHERE id = $1', [mealId]);
+        if (mealRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Meal not found' });
+        }
+
+        const meal = mealRes.rows[0];
+
+        // Create a unique token with expiry
+        const expiresAt = new Date(Date.now() + ATTENDANCE_QR_TTL_SECONDS * 1000);
+        const tokenPayload = {
+            meal_id: mealId,
+            meal_type: meal.meal_type,
+            date: meal.date,
+            generated_by: req.user.id,
+            generated_at: new Date().toISOString(),
+            expires_at: expiresAt.toISOString()
+        };
+
+        // Sign the token so students can verify it
+        const qrToken = jwt.sign(tokenPayload, JWT_SECRET, {
+            expiresIn: ATTENDANCE_QR_TTL_SECONDS
+        });
+
+        // Generate QR code as data URL
+        const qrPayload = JSON.stringify({ token: qrToken });
+        const qrImage = await QRCode.toDataURL(qrPayload, {
+            width: 400,
+            margin: 2,
+            color: { dark: '#000000', light: '#ffffff' }
+        });
+
+        res.json({
+            qr_image: qrImage,
+            token: qrToken,
+            meal_id: mealId,
+            meal_type: meal.meal_type,
+            expires_at: expiresAt.toISOString()
+        });
+    } catch (error) {
+        console.error('QR generation error:', error);
+        res.status(500).json({ error: 'QR generation failed' });
+    }
+});
+
+// POST /api/attendance — Mark attendance by scanning QR
+app.post('/api/attendance', authMiddleware, async (req, res) => {
+    console.log("ATTENDANCE MARK HIT");
+    try {
+        const { qr_token, qr_data } = req.body;
+        const userId = req.user.id;
+
+        if (!qr_token) {
+            return res.status(400).json({ error: 'Invalid QR — no token found' });
+        }
+
+        // Verify and decode the QR token
+        let decoded;
+        try {
+            decoded = jwt.verify(qr_token, JWT_SECRET);
+        } catch (err) {
+            if (err.name === 'TokenExpiredError') {
+                return res.status(410).json({ error: 'QR expired. Please ask for a new QR code.' });
+            }
+            return res.status(400).json({ error: 'Invalid QR code' });
+        }
+
+        const mealId = decoded.meal_id;
+        if (!mealId) {
+            return res.status(400).json({ error: 'Invalid QR — missing meal information' });
+        }
+
+        // Check the meal exists
+        const mealRes = await pool.query('SELECT id, meal_type, date FROM meals WHERE id = $1', [mealId]);
+        if (mealRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Meal not found' });
+        }
+
+        // Check for duplicate attendance
+        const existing = await pool.query(
+            'SELECT id FROM attendance WHERE user_id = $1 AND meal_id = $2',
+            [userId, mealId]
+        );
+        if (existing.rows.length > 0) {
+            return res.status(409).json({ error: 'Attendance already marked for this meal' });
+        }
+
+        // Record attendance
+        const attendanceRes = await pool.query(
+            `INSERT INTO attendance (id, user_id, meal_id, scanned_at, qr_token_id)
+             VALUES (uuid_generate_v4(), $1, $2, NOW(), $3)
+             RETURNING id, user_id, meal_id, scanned_at`,
+            [userId, mealId, qr_token.substring(0, 36)]
+        );
+
+        // Update reward points
+        const POINTS_PER_MEAL = 10;
+        await pool.query(
+            `INSERT INTO student_rewards (user_id, points, total_meals, last_updated)
+             VALUES ($1, $2, 1, NOW())
+             ON CONFLICT (user_id) DO UPDATE
+             SET points = student_rewards.points + $2,
+                 total_meals = student_rewards.total_meals + 1,
+                 last_updated = NOW()`,
+            [userId, POINTS_PER_MEAL]
+        );
+
+        // Fetch updated rewards
+        const rewardsRes = await pool.query(
+            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
+            [userId]
+        );
+        const rewards = rewardsRes.rows[0] || { points: POINTS_PER_MEAL, total_meals: 1 };
+
+        // Calculate effective fee
+        const discount = Math.min(rewards.points, 50);
+        const effectiveFee = DEFAULT_MEAL_BASE_FEE - discount;
+
+        res.json({
+            message: 'Attendance recorded successfully',
+            ...attendanceRes.rows[0],
+            rewards: {
+                points: rewards.points,
+                total_meals: rewards.total_meals
+            },
+            fee_preview: {
+                base_fee: DEFAULT_MEAL_BASE_FEE,
+                discount,
+                effective_fee: effectiveFee
+            }
+        });
+    } catch (error) {
+        console.error('Attendance error:', error);
+        res.status(500).json({ error: 'Failed to mark attendance' });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════════════════════
 
