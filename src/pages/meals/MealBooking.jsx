@@ -32,7 +32,12 @@ export default function MealBooking() {
                     const [mealsData, bookingsData, finalMenuResponse] = await Promise.all([
                         api.get(`/api/meals?date=${dateStr}`),
                         api.get(`/api/meal-bookings?date=${dateStr}`),
-                        fetch(`${API_URL}/api/final-menu`).then((r) => r.json().catch(() => ({})))
+                        fetch(`${API_URL}/api/final-menu`, {
+                            credentials: 'include',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        }).then((r) => r.json().catch(() => ({})))
                     ]);
 
                     const finalMenuMap = finalMenuResponse?.menu || {};

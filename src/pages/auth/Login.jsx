@@ -5,6 +5,8 @@ import { useAuth } from '../../context/AuthContext'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
 
+const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
+
 export default function Login() {
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
@@ -28,10 +30,9 @@ export default function Login() {
 
         setLoading(true)
         try {
-            const baseUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
-            console.log('[Login] Request URL:', `${baseUrl}/api/login`)
-            const response = await fetch(`${baseUrl}/api/login`, {
+            const response = await fetch(`${API_URL}/api/login`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json'
                 },
@@ -39,8 +40,6 @@ export default function Login() {
             })
 
             const data = await response.json().catch(() => ({}))
-            console.log('[Login] API status:', response.status)
-            console.log('[Login] API response:', data)
             if (!response.ok) {
                 throw new Error(data?.error || data?.message || `Login failed (${response.status})`)
             }
@@ -51,12 +50,19 @@ export default function Login() {
 
             const resolvedRole = applyLoginPayload(data) || data?.profile?.roles?.name?.toLowerCase() || 'student'
             const nextPath = from || getDashboardPath(resolvedRole)
-            console.log('[Login] Resolved role:', resolvedRole)
-            console.log('[Login] Navigate to:', nextPath)
             navigate(nextPath, { replace: true })
         } catch (err) {
-            console.error('[Login] Error:', err)
-            setError(err.message || 'Failed to sign in')
+            const rawMessage = String(err?.message || '')
+            const isNetworkError =
+                !navigator.onLine ||
+                rawMessage.toLowerCase().includes('failed to fetch') ||
+                rawMessage.toLowerCase().includes('network error')
+
+            setError(
+                isNetworkError
+                    ? 'Unable to reach the server. Please check VITE_API_URL and try again.'
+                    : (err.message || 'Failed to sign in')
+            )
         } finally {
             setLoading(false)
         }

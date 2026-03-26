@@ -34,7 +34,12 @@ export default function FinalMenu() {
             setLoading(true)
             setError('')
             try {
-                const response = await fetch(`${API_URL}/api/final-menu`)
+                const response = await fetch(`${API_URL}/api/final-menu`, {
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
                 const data = await response.json().catch(() => ({}))
 
                 if (!response.ok) {

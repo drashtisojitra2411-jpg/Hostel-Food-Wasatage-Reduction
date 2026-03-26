@@ -1,16 +1,16 @@
 import axios from 'axios';
 
-const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
+export const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
 
 function resolveApiBaseUrl() {
-    if (!API_BASE) {
+    if (!API_URL) {
         return '/';
     }
 
-    return API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+    return API_URL;
 }
 
-const API_BASE_URL = resolveApiBaseUrl();
+export const API_BASE_URL = resolveApiBaseUrl();
 
 const apiClient = axios.create({
     baseURL: API_BASE_URL,

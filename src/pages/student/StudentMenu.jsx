@@ -31,12 +31,14 @@ export default function StudentMenu() {
         try {
             const [optionsRes, finalRes] = await Promise.all([
                 fetch(`${API_URL}/api/menu-options`, {
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
                     }
                 }),
                 fetch(`${API_URL}/api/final-menu`, {
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
@@ -97,6 +99,7 @@ export default function StudentMenu() {
                 const [day, mealType] = key.split('_')
                 const response = await fetch(`${API_URL}/api/vote`, {
                     method: 'POST',
+                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         ...getAuthHeaders()
