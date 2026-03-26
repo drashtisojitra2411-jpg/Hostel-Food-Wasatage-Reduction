@@ -14,7 +14,11 @@ console.log("DATABASE_URL:", process.env.DATABASE_URL);
 const app = express();
 
 app.use(cors({
-    origin: "*",
+    origin: [
+        "http://localhost:5174",
+        "https://zerobite-two.vercel.app",
+        "https://zerobite-7ljbrb363-drashtisojitra2411-jpgs-projects.vercel.app"
+    ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
 }));
