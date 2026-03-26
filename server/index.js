@@ -1178,6 +1178,42 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
     }
 });
 
+// GET /api/attendance/history - Get attendance history for current student
+app.get('/api/attendance/history', authMiddleware, requireRole(['student']), async (req, res) => {
+    try {
+        const historyRes = await pool.query(
+            `SELECT a.id, a.scanned_at, m.meal_type
+             FROM attendance a
+             JOIN meals m ON a.meal_id = m.id
+             WHERE a.user_id = $1
+             ORDER BY a.scanned_at DESC`,
+            [req.user.id]
+        );
+        
+        const history = historyRes.rows.map(row => {
+            const dateObj = new Date(row.scanned_at);
+            const istStr = dateObj.toLocaleString('en-US', { timeZone: IST_TIMEZONE });
+            const istDate = new Date(istStr);
+            
+            const istDateStr = istDate.toLocaleDateString('en-CA'); // YYYY-MM-DD
+            const istTimeStr = istDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+            
+            return {
+                id: row.id,
+                date: istDateStr,
+                meal: String(row.meal_type || 'meal'),
+                time: formatTime12h(istTimeStr),
+                status: 'present' // default
+            };
+        });
+
+        return res.json(history);
+    } catch (error) {
+        console.error('Attendance history error:', error);
+        return res.status(500).json({ error: 'Failed to fetch attendance history' });
+    }
+});
+
 // GET /api/rewards/summary - current student's reward summary
 app.get('/api/rewards/summary', authMiddleware, requireRole(['student']), async (req, res) => {
     try {

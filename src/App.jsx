@@ -27,6 +27,7 @@ const Impact = lazy(() => import('./pages/student/Impact'))
 const Settings = lazy(() => import('./pages/student/Settings'))
 const StudentMenu = lazy(() => import('./pages/student/StudentMenu'))
 const History = lazy(() => import('./pages/student/History'))
+const AttendanceHistory = lazy(() => import('./pages/student/AttendanceHistory'))
 const MealSelection = lazy(() => import('./pages/student/MealSelection'))
 const AttendanceScanner = lazy(() => import('./pages/student/AttendanceScanner'))
 
@@ -69,6 +70,7 @@ export default function App() {
                 <Route path="/settings" element={<ProtectedRoute allowedRoles={['student']}><Settings /></ProtectedRoute>} />
                 <Route path="/student/menu" element={<ProtectedRoute allowedRoles={['student']}><StudentMenu /></ProtectedRoute>} />
                 <Route path="/history" element={<ProtectedRoute allowedRoles={['student']}><History /></ProtectedRoute>} />
+                <Route path="/attendance-history" element={<ProtectedRoute allowedRoles={['student']}><AttendanceHistory /></ProtectedRoute>} />
                 <Route path="/meal-selection" element={<ProtectedRoute allowedRoles={['student', 'mess_manager', 'super_admin']}><MealSelection /></ProtectedRoute>} />
                 <Route path="/attendance/scan" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
                 <Route path="/scan-attendance" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
