@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../../context/AuthContext'
 import { getDashboardPath } from '../../components/ProtectedRoute'
+import { useAuth } from '../../context/AuthContext'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
 
@@ -10,7 +10,7 @@ export default function Login() {
     const [password, setPassword] = useState('')
     const [error, setError] = useState('')
     const [loading, setLoading] = useState(false)
-    const { signIn } = useAuth()
+    const { applyLoginPayload } = useAuth()
     const navigate = useNavigate()
     const location = useLocation()
 
@@ -28,10 +28,34 @@ export default function Login() {
 
         setLoading(true)
         try {
-            const data = await signIn({ email, password })
-            const nextPath = from || getDashboardPath(data?.profile?.roles?.name?.toLowerCase())
+            const baseUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
+            console.log('[Login] Request URL:', `${baseUrl}/api/login`)
+            const response = await fetch(`${baseUrl}/api/login`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ email, password })
+            })
+
+            const data = await response.json().catch(() => ({}))
+            console.log('[Login] API status:', response.status)
+            console.log('[Login] API response:', data)
+            if (!response.ok) {
+                throw new Error(data?.error || data?.message || `Login failed (${response.status})`)
+            }
+
+            if (!data?.token) {
+                throw new Error('Login failed: missing token in response')
+            }
+
+            const resolvedRole = applyLoginPayload(data) || data?.profile?.roles?.name?.toLowerCase() || 'student'
+            const nextPath = from || getDashboardPath(resolvedRole)
+            console.log('[Login] Resolved role:', resolvedRole)
+            console.log('[Login] Navigate to:', nextPath)
             navigate(nextPath, { replace: true })
         } catch (err) {
+            console.error('[Login] Error:', err)
             setError(err.message || 'Failed to sign in')
         } finally {
             setLoading(false)

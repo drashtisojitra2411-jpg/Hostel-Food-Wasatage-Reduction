@@ -73,7 +73,7 @@ export function AuthProvider({ children }) {
     }
 
     async function signIn({ email, password }) {
-        const data = await api.post('/api/auth/login', {
+        const data = await api.post('/api/login', {
             email,
             password
         })
@@ -82,12 +82,18 @@ export function AuthProvider({ children }) {
             throw new Error('Login failed: missing token in response')
         }
 
-        api.setToken(data.token)
-        setUser(data.user || null)
-        setProfile(data.profile || null)
-        setRole(data.profile?.roles?.name?.toLowerCase() || 'student')
+        applyLoginPayload(data)
 
         return data
+    }
+
+    function applyLoginPayload(data) {
+        api.setToken(data?.token || null)
+        setUser(data?.user || null)
+        setProfile(data?.profile || null)
+        const resolvedRole = data?.profile?.roles?.name?.toLowerCase() || 'student'
+        setRole(resolvedRole)
+        return resolvedRole
     }
 
     async function signOut() {
@@ -134,6 +140,7 @@ export function AuthProvider({ children }) {
         loading,
         signUp,
         signIn,
+        applyLoginPayload,
         signOut,
         resetPassword,
         updatePassword,

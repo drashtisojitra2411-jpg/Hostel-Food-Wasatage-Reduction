@@ -103,6 +103,19 @@ CREATE TABLE IF NOT EXISTS meal_bookings (
     UNIQUE(user_id, meal_id)
 );
 
+-- Menu voting (one option per user per day+meal+week)
+CREATE TABLE IF NOT EXISTS menu_votes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+    week_start DATE NOT NULL,
+    day VARCHAR(20) NOT NULL,
+    meal_type VARCHAR(20) NOT NULL,
+    selected_option VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, week_start, day, meal_type)
+);
+
 -- Booking preferences for auto-booking
 CREATE TABLE IF NOT EXISTS booking_preferences (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -351,6 +364,8 @@ CREATE INDEX IF NOT EXISTS idx_meal_bookings_user ON meal_bookings(user_id);
 CREATE INDEX IF NOT EXISTS idx_meal_bookings_meal ON meal_bookings(meal_id);
 CREATE INDEX IF NOT EXISTS idx_meal_bookings_date ON meal_bookings(booking_date);
 CREATE INDEX IF NOT EXISTS idx_meal_bookings_status ON meal_bookings(status);
+CREATE INDEX IF NOT EXISTS idx_menu_votes_week_start ON menu_votes(week_start);
+CREATE INDEX IF NOT EXISTS idx_menu_votes_day_meal ON menu_votes(day, meal_type);
 
 CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory(category_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_status ON inventory(status);

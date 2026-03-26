@@ -1,119 +1,140 @@
-import React, { useState } from 'react';
-import Navigation from '../../components/layout/Navigation';
-import Button from '../../components/common/Button';
-import Card from '../../components/common/Card';
-import Notification from '../../components/common/Notification';
-import { useMeals } from '../../context/MealContext';
+import { useEffect, useMemo, useState } from 'react'
+import Navigation from '../../components/layout/Navigation'
 
-const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-const MEAL_TYPES = ['breakfast', 'lunch', 'dinner'];
-const DAY_LABELS = {
-    monday: 'MON', tuesday: 'TUE', wednesday: 'WED',
-    thursday: 'THU', friday: 'FRI', saturday: 'SAT', sunday: 'SUN'
-};
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-export default function MealSelection() {
-    const {
-        finalizedMenu,
-        loading: contextLoading,
-        error: contextError,
-        retryLoad,
-        weekKey
-    } = useMeals();
-    const [notification, setNotification] = useState({ show: false, message: '', type: 'info' });
+const fallbackMenu = {
+    Monday: { breakfast: 'Poha', lunch: 'Dal Rice', dinner: 'Khichdi' },
+    Tuesday: { breakfast: 'Upma', lunch: 'Paneer Roti', dinner: 'Pulao' },
+    Wednesday: { breakfast: 'Sandwich', lunch: 'Rajma Rice', dinner: 'Chapati Sabji' },
+    Thursday: { breakfast: 'Idli Sambar', lunch: 'Veg Biryani', dinner: 'Curd Rice' },
+    Friday: { breakfast: 'Paratha', lunch: 'Sambar Rice', dinner: 'Lemon Rice' },
+    Saturday: { breakfast: 'Dosa', lunch: 'Kadhi Chawal', dinner: 'Veg Noodles' },
+    Sunday: { breakfast: 'Chole Bhature', lunch: 'Special Thali', dinner: 'Special Meal' }
+}
+
+const mealMeta = {
+    breakfast: { icon: '🍳', title: 'BREAKFAST', time: '07:30 - 09:30' },
+    lunch: { icon: '🍛', title: 'LUNCH', time: '12:30 - 14:30' },
+    dinner: { icon: '🌙', title: 'DINNER', time: '19:30 - 21:30' }
+}
+
+export default function FinalMenu() {
+    const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
+    const [menu, setMenu] = useState(fallbackMenu)
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState('')
+
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long' })
+
+    useEffect(() => {
+        let mounted = true
+
+        async function loadFinalMenu() {
+            setLoading(true)
+            setError('')
+            try {
+                const response = await fetch(`${API_URL}/api/final-menu`)
+                const data = await response.json().catch(() => ({}))
+
+                if (!response.ok) {
+                    throw new Error(data?.error || data?.message || `Request failed (${response.status})`)
+                }
+
+                if (mounted && data?.menu && typeof data.menu === 'object') {
+                    setMenu({ ...fallbackMenu, ...data.menu })
+                } else if (mounted) {
+                    setMenu(fallbackMenu)
+                    setError('Using fallback menu')
+                }
+            } catch (err) {
+                if (mounted) {
+                    console.error('Final menu fetch error:', err)
+                    setMenu(fallbackMenu)
+                    setError('Using fallback menu')
+                }
+            } finally {
+                if (mounted) {
+                    setLoading(false)
+                }
+            }
+        }
+
+        loadFinalMenu()
+        return () => {
+            mounted = false
+        }
+    }, [API_URL])
+
+    const cards = useMemo(() => DAYS.map((day) => ({ day, meals: menu?.[day] || fallbackMenu[day] })), [menu])
 
     return (
         <div className="min-h-screen bg-black text-white selection:bg-creative-lime selection:text-black">
             <Navigation />
-            <Notification isVisible={notification.show} message={notification.message} type={notification.type} onClose={() => setNotification(prev => ({ ...prev, show: false }))} />
 
-            <main className="lg:ml-72 min-h-screen pt-20 pb-24 lg:py-8 px-4 md:px-8 lg:px-16 relative overflow-hidden">
-                <div className="max-w-7xl mx-auto space-y-8 md:space-y-12 relative z-10">
-                    <div className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-6 md:gap-8 animate-fade-in">
-                        <div>
-                            <h1 className="text-4xl md:text-6xl lg:text-8xl font-black tracking-tighter leading-[0.85] italic uppercase">
-                                MEAL<br />
-                                <span className="text-creative-purple">SELECT.</span>
-                            </h1>
-                            <p className="mt-4 text-sm text-white/50 font-medium max-w-xl">
-                                Weekly menu is fetched from the database and displayed in read-only mode.
-                            </p>
+            <main className="lg:ml-72 min-h-screen pt-20 pb-24 lg:py-8 px-4 md:px-8 lg:px-10">
+                <div className="max-w-7xl mx-auto">
+                    <header className="mb-8">
+                        <p className="text-sm text-white/60">Weekly Plan</p>
+                        <h1 className="text-3xl sm:text-4xl font-black tracking-tight italic uppercase">Finalized Menu</h1>
+                        {error ? <p className="mt-2 text-sm text-amber-300">{error}</p> : null}
+                    </header>
+
+                    {loading ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {DAYS.map((day) => (
+                                <div key={day} className="rounded-2xl border border-white/10 bg-white/5 p-5 animate-pulse h-72" />
+                            ))}
                         </div>
+                    ) : (
+                        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {cards.map(({ day, meals }) => {
+                                const isToday = day === today
+                                return (
+                                    <article
+                                        key={day}
+                                        className={`rounded-2xl border p-5 bg-white/[0.04] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_18px_50px_-20px_rgba(255,255,255,0.28)] ${
+                                            isToday
+                                                ? 'border-creative-lime/60 shadow-[0_0_0_1px_rgba(163,230,53,0.35),0_0_40px_-18px_rgba(163,230,53,0.8)]'
+                                                : 'border-white/10'
+                                        }`}
+                                    >
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h2 className="text-xl font-semibold">{day}</h2>
+                                            <div className="flex items-center gap-2">
+                                                {isToday ? (
+                                                    <span className="rounded-full bg-creative-lime text-black text-[11px] font-semibold px-2.5 py-1">
+                                                        Today
+                                                    </span>
+                                                ) : null}
+                                                <span className="rounded-full border border-sky-300/40 bg-sky-300/10 text-sky-300 text-[11px] font-semibold px-2.5 py-1">
+                                                    Final Menu
+                                                </span>
+                                            </div>
+                                        </div>
 
-                        <Card variant="premium" className="w-full lg:w-96 border-white/5 p-5 md:p-6">
-                            <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30">Status</span>
-                                    <span className="text-[10px] font-black px-3 py-1 rounded-full bg-white/10 text-white border border-white/20">DB LINKED</span>
-                                </div>
-                                <div className="flex justify-between items-center">
-                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30">Week</span>
-                                    <span className="text-sm font-black tracking-widest text-creative-purple">{weekKey}</span>
-                                </div>
-                            </div>
-                        </Card>
-                    </div>
-
-                    {contextLoading && (
-                        <div className="flex flex-col items-center justify-center py-32 animate-pulse">
-                            <div className="w-20 h-20 border-4 border-creative-purple/20 border-t-creative-purple rounded-full animate-spin mb-8" />
-                            <span className="text-[10px] font-black uppercase tracking-[0.5em] text-creative-purple">Loading Menu...</span>
-                        </div>
-                    )}
-
-                    {contextError && !contextLoading && (
-                        <Card variant="glass" className="py-20 flex flex-col items-center text-center">
-                            <h3 className="text-3xl font-black italic uppercase tracking-tighter mb-4">Data Feed Interrupted</h3>
-                            <p className="text-white/40 max-w-md font-medium mb-8">{contextError}</p>
-                            <Button onClick={retryLoad}>RETRY CONNECTION</Button>
-                        </Card>
-                    )}
-
-                    {!contextLoading && !contextError && (
-                        <Card variant="premium" className="border-white/5 overflow-visible">
-                            <div className="flex justify-between items-center mb-10 px-4">
-                                <div>
-                                    <h2 className="text-3xl font-black tracking-tighter italic uppercase text-creative-purple mb-2">FINALIZED MENU</h2>
-                                </div>
-                            </div>
-
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-left border-collapse">
-                                    <thead>
-                                        <tr className="border-b border-white/10">
-                                            <th className="py-6 px-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Day</th>
-                                            {MEAL_TYPES.map(m => (
-                                                <th key={m} className="py-6 px-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">
-                                                    {m}
-                                                </th>
+                                        <div className="space-y-3">
+                                            {['breakfast', 'lunch', 'dinner'].map((mealKey) => (
+                                                <div key={`${day}-${mealKey}`} className="rounded-xl border border-white/10 bg-black/40 p-3.5">
+                                                    <div className="flex items-center justify-between mb-1">
+                                                        <p className="text-xs tracking-wider text-white/65 font-semibold">
+                                                            {mealMeta[mealKey].icon} {mealMeta[mealKey].title}
+                                                        </p>
+                                                        <span className="text-[11px] text-white/45">{mealMeta[mealKey].time}</span>
+                                                    </div>
+                                                    <p className="text-base sm:text-lg font-semibold text-white mt-2 break-words">
+                                                        {meals?.[mealKey] || fallbackMenu[day][mealKey]}
+                                                    </p>
+                                                </div>
                                             ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-white/5">
-                                        {DAYS.map(day => (
-                                            <tr key={day} className="group hover:bg-white/[0.02] transition-colors">
-                                                <td className="py-6 px-6 font-black italic tracking-tight text-white/80 uppercase">
-                                                    {DAY_LABELS[day]}
-                                                </td>
-                                                {MEAL_TYPES.map(m => {
-                                                    const slotKey = `${day}_${m}`;
-                                                    return (
-                                                        <td key={m} className="py-6 px-6">
-                                                            <p className="text-xs font-black tracking-tight uppercase text-white/60 leading-relaxed">
-                                                                {finalizedMenu?.[slotKey]?.name || 'NOT SCHEDULED'}
-                                                            </p>
-                                                        </td>
-                                                    );
-                                                })}
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </Card>
+                                        </div>
+                                    </article>
+                                )
+                            })}
+                        </section>
                     )}
                 </div>
             </main>
         </div>
-    );
+    )
 }

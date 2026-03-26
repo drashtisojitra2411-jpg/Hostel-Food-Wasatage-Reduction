@@ -21,15 +21,96 @@ const pool = new pg.Pool({
     ssl: process.env.DATABASE_URL?.includes('neon') ? { rejectUnauthorized: false } : false
 });
 
+const MENU_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const MENU_MEALS = ['breakfast', 'lunch', 'dinner'];
+const DEFAULT_MENU_OPTIONS = {
+    Monday: {
+        breakfast: ['Poha', 'Upma', 'Sandwich', 'Idli Sambar'],
+        lunch: ['Dal Rice', 'Paneer Roti', 'Rajma Rice', 'Veg Pulao'],
+        dinner: ['Khichdi', 'Chapati Sabji', 'Pulao', 'Curd Rice']
+    },
+    Tuesday: {
+        breakfast: ['Aloo Paratha', 'Dosa', 'Bread Omelette', 'Pongal'],
+        lunch: ['Chole Rice', 'Mix Veg Roti', 'Sambar Rice', 'Jeera Rice'],
+        dinner: ['Veg Noodles', 'Dal Khichdi', 'Roti Curry', 'Lemon Rice']
+    },
+    Wednesday: {
+        breakfast: ['Masala Dosa', 'Puri Bhaji', 'Corn Sandwich', 'Sev Upma'],
+        lunch: ['Kadhi Chawal', 'Paneer Bhurji Roti', 'Veg Biryani', 'Curd Rice'],
+        dinner: ['Fried Rice', 'Chapati Dal', 'Veg Pulao', 'Tomato Rice']
+    },
+    Thursday: {
+        breakfast: ['Idli', 'Poha', 'Besan Chilla', 'Veg Sandwich'],
+        lunch: ['Rajma Rice', 'Aloo Gobi Roti', 'Dal Tadka Rice', 'Veg Khichdi'],
+        dinner: ['Pulao', 'Chapati Paneer', 'Lemon Rice', 'Veg Noodles']
+    },
+    Friday: {
+        breakfast: ['Uttapam', 'Paratha', 'Dhokla', 'Bread Butter'],
+        lunch: ['Soya Curry Roti', 'Dal Fry Rice', 'Paneer Rice Bowl', 'Curd Rice'],
+        dinner: ['Khichdi', 'Roti Sabji', 'Peas Pulao', 'Sambar Rice']
+    },
+    Saturday: {
+        breakfast: ['Poori', 'Medu Vada', 'Poha', 'Sprouts Salad'],
+        lunch: ['Veg Biryani', 'Dal Rice', 'Paneer Roti', 'Kadhi Rice'],
+        dinner: ['Pasta', 'Chapati Curry', 'Jeera Rice', 'Khichdi']
+    },
+    Sunday: {
+        breakfast: ['Chole Bhature', 'Masala Oats', 'Dosa', 'Sandwich'],
+        lunch: ['Special Thali', 'Paneer Butter Masala Roti', 'Pulao Raita', 'Dal Makhani Rice'],
+        dinner: ['Special Meal', 'Veg Fried Rice', 'Chapati Paneer', 'Khichdi']
+    }
+};
+
+function getWeekStartISO(input = new Date()) {
+    const current = new Date(input);
+    const day = current.getDay();
+    const offset = day === 0 ? -6 : 1 - day;
+    current.setDate(current.getDate() + offset);
+    current.setHours(0, 0, 0, 0);
+    return current.toISOString().split('T')[0];
+}
+
+function normalizeDay(day) {
+    const value = String(day || '').trim().toLowerCase();
+    return MENU_DAYS.find((d) => d.toLowerCase() === value) || '';
+}
+
+function normalizeMealType(mealType) {
+    const value = String(mealType || '').trim().toLowerCase();
+    return MENU_MEALS.includes(value) ? value : '';
+}
+
+async function ensureMenuVotingTable() {
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS menu_votes (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+            week_start DATE NOT NULL,
+            day VARCHAR(20) NOT NULL,
+            meal_type VARCHAR(20) NOT NULL,
+            selected_option VARCHAR(255) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(user_id, week_start, day, meal_type)
+        )`
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_menu_votes_week_start ON menu_votes(week_start)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_menu_votes_day_meal ON menu_votes(day, meal_type)');
+}
+
 // Test DB connection on startup
 pool.query('SELECT NOW()')
-    .then(() => console.log('✅ Database connected'))
+    .then(async () => {
+        await ensureMenuVotingTable();
+        console.log('✅ Database connected');
+    })
     .catch(err => console.error('❌ Database connection failed:', err.message));
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 const corsOrigins = [
-    'http://localhost:5173',
-    'https://hfwr-app.vercel.app',
+    'http://localhost:5174',
+    'https://zerobite-two.vercel.app',
     ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean) : [])
 ];
 
@@ -173,8 +254,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// POST /api/auth/login
-app.post('/api/auth/login', async (req, res) => {
+async function loginHandler(req, res) {
     try {
         console.log('Login request received');
         const { email, password } = req.body;
@@ -213,15 +293,21 @@ app.post('/api/auth/login', async (req, res) => {
 
         // Build profile object (exclude password_hash)
         const { password_hash, ...profile } = user;
-        profile.roles = { id: user.role_id, name: user.role_name, permissions: user.permissions };
+        profile.roles = { id: user.role_id, name: user.role_name || 'student', permissions: user.permissions };
         profile.hostels = user.hostel_id ? { id: user.hostel_id, name: user.hostel_name, code: user.hostel_code } : null;
 
         res.json({ token, user: { id: user.id, email: user.email }, profile });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: 'Login failed' });
+        res.status(500).json({ error: error.message || 'Login failed' });
     }
-});
+}
+
+// POST /api/login
+app.post('/api/login', loginHandler);
+
+// Backward-compatible route
+app.post('/api/auth/login', loginHandler);
 
 // GET /api/auth/me — validate token and return current user + profile
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
@@ -630,6 +716,217 @@ app.get('/api/meals', async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch meals' });
+    }
+});
+
+async function loadVotesForWeek(weekStart) {
+    const result = await pool.query(
+        'SELECT user_id, day, meal_type, selected_option FROM menu_votes WHERE week_start = $1',
+        [weekStart]
+    );
+    return result.rows;
+}
+
+function buildFinalMenuFromVotes(votes = []) {
+    const voteCounts = {};
+    const finalMenu = {};
+
+    MENU_DAYS.forEach((day) => {
+        finalMenu[day] = {};
+        voteCounts[day] = {};
+
+        MENU_MEALS.forEach((mealType) => {
+            voteCounts[day][mealType] = {};
+            DEFAULT_MENU_OPTIONS[day][mealType].forEach((option) => {
+                voteCounts[day][mealType][option] = 0;
+            });
+        });
+    });
+
+    votes.forEach((vote) => {
+        const day = normalizeDay(vote.day);
+        const mealType = normalizeMealType(vote.meal_type);
+        const option = String(vote.selected_option || '');
+
+        if (!day || !mealType) return;
+        if (!DEFAULT_MENU_OPTIONS[day][mealType].includes(option)) return;
+
+        voteCounts[day][mealType][option] += 1;
+    });
+
+    MENU_DAYS.forEach((day) => {
+        MENU_MEALS.forEach((mealType) => {
+            const options = DEFAULT_MENU_OPTIONS[day][mealType];
+            const counts = voteCounts[day][mealType];
+
+            let selected = options[0];
+            let maxVotes = -1;
+
+            options.forEach((option) => {
+                const count = Number(counts[option] || 0);
+                if (count > maxVotes) {
+                    maxVotes = count;
+                    selected = option;
+                }
+            });
+
+            finalMenu[day][mealType] = selected;
+        });
+    });
+
+    return { finalMenu, voteCounts };
+}
+
+// GET /api/menu-options - all options for current week
+app.get('/api/menu-options', optionalAuth, async (req, res) => {
+    try {
+        const weekStart = getWeekStartISO();
+        const myVotes = {};
+
+        if (req.user?.id) {
+            const ownVotes = await pool.query(
+                'SELECT day, meal_type, selected_option FROM menu_votes WHERE user_id = $1 AND week_start = $2',
+                [req.user.id, weekStart]
+            );
+
+            ownVotes.rows.forEach((row) => {
+                const day = normalizeDay(row.day);
+                const mealType = normalizeMealType(row.meal_type);
+                if (!day || !mealType) return;
+                myVotes[`${day}_${mealType}`] = row.selected_option;
+            });
+        }
+
+        res.json({
+            week_start: weekStart,
+            options: DEFAULT_MENU_OPTIONS,
+            my_votes: myVotes
+        });
+    } catch (error) {
+        console.error('Menu options fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch menu options' });
+    }
+});
+
+// POST /api/vote - save one user vote for one day+meal
+app.post('/api/vote', authMiddleware, async (req, res) => {
+    try {
+        const day = normalizeDay(req.body.day);
+        const mealType = normalizeMealType(req.body.mealType);
+        const selectedOption = String(req.body.selectedOption || '').trim();
+        const weekStart = req.body.weekStart || getWeekStartISO();
+
+        if (!day || !mealType || !selectedOption) {
+            return res.status(400).json({ error: 'day, mealType and selectedOption are required' });
+        }
+
+        const allowedOptions = DEFAULT_MENU_OPTIONS[day][mealType];
+        if (!allowedOptions.includes(selectedOption)) {
+            return res.status(400).json({ error: 'Invalid option selected' });
+        }
+
+        await pool.query(
+            `INSERT INTO menu_votes (user_id, week_start, day, meal_type, selected_option)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (user_id, week_start, day, meal_type)
+             DO UPDATE SET selected_option = EXCLUDED.selected_option, updated_at = NOW()`,
+            [req.user.id, weekStart, day, mealType, selectedOption]
+        );
+
+        res.json({ message: 'Vote saved', vote: { userId: req.user.id, day, mealType, selectedOption, weekStart } });
+    } catch (error) {
+        console.error('Vote save error:', error);
+        res.status(500).json({ error: 'Failed to save vote' });
+    }
+});
+
+// GET /api/final-menu - highest-voted option per day+meal (fallback to default option if no votes)
+app.get('/api/final-menu', optionalAuth, async (req, res) => {
+    try {
+        const weekStart = req.query.week_start || getWeekStartISO();
+        const votes = await loadVotesForWeek(weekStart);
+        const { finalMenu, voteCounts } = buildFinalMenuFromVotes(votes);
+
+        const voterCountRes = await pool.query(
+            'SELECT COUNT(DISTINCT user_id)::int AS voter_count FROM menu_votes WHERE week_start = $1',
+            [weekStart]
+        );
+
+        const myVotes = {};
+        if (req.user?.id) {
+            const ownVotes = votes.filter((v) => String(v.user_id) === String(req.user.id));
+            ownVotes.forEach((v) => {
+                const day = normalizeDay(v.day);
+                const mealType = normalizeMealType(v.meal_type);
+                if (!day || !mealType) return;
+                myVotes[`${day}_${mealType}`] = v.selected_option;
+            });
+        }
+
+        res.json({
+            week_start: weekStart,
+            menu: finalMenu,
+            vote_counts: voteCounts,
+            voter_count: voterCountRes.rows[0]?.voter_count || 0,
+            my_votes: myVotes
+        });
+    } catch (error) {
+        console.error('Final menu fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch final menu' });
+    }
+});
+
+// GET /api/finalized-menu - backward-compatible format used by existing frontend context
+app.get('/api/finalized-menu', optionalAuth, async (req, res) => {
+    try {
+        const weekStart = req.query.week_start || getWeekStartISO();
+        const votes = await loadVotesForWeek(weekStart);
+        const { finalMenu } = buildFinalMenuFromVotes(votes);
+
+        const menuMap = {};
+        MENU_DAYS.forEach((day) => {
+            MENU_MEALS.forEach((mealType) => {
+                const key = `${day.toLowerCase()}_${mealType}`;
+                menuMap[key] = {
+                    id: null,
+                    meal_id: null,
+                    day: day.toLowerCase(),
+                    meal_type: mealType,
+                    name: finalMenu?.[day]?.[mealType] || DEFAULT_MENU_OPTIONS[day][mealType][0],
+                    vote_count: 0,
+                    used_default: true
+                };
+            });
+        });
+
+        res.json({
+            week_start: weekStart,
+            menu_map: menuMap,
+            voter_count: 0
+        });
+    } catch (error) {
+        console.error('Finalized menu fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch finalized menu' });
+    }
+});
+
+// GET /api/menus - compatibility summary for UI cards
+app.get('/api/menus', async (req, res) => {
+    try {
+        const weekStart = req.query.week_start || getWeekStartISO();
+        const votes = await loadVotesForWeek(weekStart);
+        const { finalMenu } = buildFinalMenuFromVotes(votes);
+
+        const menus = MENU_DAYS.map((day) => ({
+            day,
+            meal: finalMenu[day]?.lunch || DEFAULT_MENU_OPTIONS[day]?.lunch?.[0] || '',
+            meals: finalMenu[day] || {}
+        }));
+
+        res.json({ week_start: weekStart, menus });
+    } catch (error) {
+        console.error('Menus fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch menus' });
     }
 });
 
@@ -1503,9 +1800,16 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
 // START SERVER
 // ═══════════════════════════════════════════════════════════════════════════
 
+app.use((err, req, res, next) => {
+    if (err && err.message === 'CORS origin not allowed') {
+        return res.status(403).json({ error: 'CORS origin not allowed' });
+    }
+
+    console.error('Unhandled error:', err);
+    return res.status(err?.status || 500).json({ error: err?.message || 'Internal server error' });
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
     console.log(`   Database: ${process.env.DATABASE_URL ? 'configured' : '⚠️  DATABASE_URL not set'}`);
 });
-
-

@@ -4,9 +4,6 @@ const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
 
 function resolveApiBaseUrl() {
     if (!API_BASE) {
-        if (import.meta.env.DEV) {
-            return 'http://localhost:3001';
-        }
         return '/';
     }
 
@@ -66,7 +63,7 @@ apiClient.interceptors.response.use(
         let message = rawMessage;
 
         if (!error.response) {
-            message = 'Network error. Please check your internet connection.';
+            message = rawMessage || 'Request failed to reach the server.';
         } else if (status >= 500) {
             message = 'Server error. Please try again in a moment.';
         } else if (status === 403) {

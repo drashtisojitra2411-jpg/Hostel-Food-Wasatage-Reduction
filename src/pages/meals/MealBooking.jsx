@@ -1,12 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import Navigation from '../../components/layout/Navigation';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../../components/common/Button';
 import Card from '../../components/common/Card';
 import Notification from '../../components/common/Notification';
 import api from '../../lib/api';
-import { useMeals } from '../../context/MealContext';
-import { useMemo } from 'react';
 
 const MEAL_METADATA = {
     breakfast: { icon: '🍳', calories: 320, protein: '8g' },
@@ -16,25 +14,28 @@ const MEAL_METADATA = {
 
 export default function MealBooking() {
     const { user } = useAuth();
-    const { finalizedMenu, loading: contextLoading } = useMeals();
     const [selectedDate, setSelectedDate] = useState(new Date());
     const [bookings, setBookings] = useState({});
     const [meals, setMeals] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [flippedCards, setFlippedCards] = useState({});
     const [notification, setNotification] = useState({ show: false, message: '', type: 'info' });
-    const [mealDefinitions, setMealDefinitions] = useState({});
+    const API_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
 
     // Fetch bookings and merge with voting results
     useEffect(() => {
         async function fetchData() {
-            setLoading(true);
-            try {
-                const dateStr = selectedDate.toISOString().split('T')[0];
-                const dayName = selectedDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+                setLoading(true);
+                try {
+                    const dateStr = selectedDate.toISOString().split('T')[0];
+                    const dayName = selectedDate.toLocaleDateString('en-US', { weekday: 'long' });
 
-                const mealsData = await api.get(`/api/meals?date=${dateStr}`);
-                const bookingsData = await api.get(`/api/meal-bookings?date=${dateStr}`);
+                    const [mealsData, bookingsData, finalMenuResponse] = await Promise.all([
+                        api.get(`/api/meals?date=${dateStr}`),
+                        api.get(`/api/meal-bookings?date=${dateStr}`),
+                        fetch(`${API_URL}/api/final-menu`).then((r) => r.json().catch(() => ({})))
+                    ]);
+
+                    const finalMenuMap = finalMenuResponse?.menu || {};
 
                 const bookedMealIds = new Set(bookingsData?.map(b => b.meal_id));
                 const currentBookings = {};
@@ -42,8 +43,7 @@ export default function MealBooking() {
                 const processedMeals = mealsData?.map(meal => {
                     if (bookedMealIds.has(meal.id)) currentBookings[meal.id] = true;
 
-                    const slotKey = `${dayName}_${meal.meal_type}`;
-                    const votedMenu = finalizedMenu[slotKey] || 'TBD';
+                    const votedMenu = finalMenuMap?.[dayName]?.[meal.meal_type] || 'Chef Special';
                     const metadata = MEAL_METADATA[meal.meal_type] || {};
 
                     return {
@@ -66,7 +66,7 @@ export default function MealBooking() {
             }
         }
         if (user) fetchData();
-    }, [selectedDate, user, finalizedMenu]);
+    }, [selectedDate, user, API_URL]);
 
     const toggleBooking = async (meal) => {
         const isBooked = bookings[meal.id];
@@ -129,7 +129,7 @@ export default function MealBooking() {
                                 <span className="text-xl font-black text-white/20 italic">/ {occupancy.total}</span>
                             </div>
                             <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                                <div className="h-full bg-creative-lime shadow-[0_0_20px_rgba(163,230,53,0.8)] transition-all duration-1000" style={{ width: `${(occupancy.booked / occupancy.total) * 100}%` }} />
+                                <div className="h-full bg-creative-lime shadow-[0_0_20px_rgba(163,230,53,0.8)] transition-all duration-1000" style={{ width: `${occupancy.total > 0 ? (occupancy.booked / occupancy.total) * 100 : 0}%` }} />
                             </div>
                         </Card>
                     </div>
@@ -164,7 +164,7 @@ export default function MealBooking() {
                         </div>
                     ) : meals.length > 0 ? (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                            {meals.map((meal, index) => (
+                            {meals.map((meal) => (
                                 <Card
                                     key={meal.id}
                                     variant="glass"
@@ -192,7 +192,7 @@ export default function MealBooking() {
 
                                             <div className="p-6 bg-white/5 rounded-2xl border border-white/5 mb-8">
                                                 <p className="text-sm font-medium text-white/60 leading-relaxed uppercase tracking-tight">
-                                                    {meal.menu?.name || 'TBD'}
+                                                    {meal.menu || 'TBD'}
                                                 </p>
                                             </div>
 
