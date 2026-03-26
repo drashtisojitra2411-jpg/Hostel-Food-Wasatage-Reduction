@@ -13,13 +13,24 @@ const __dirname = dirname(__filename);
 console.log("DATABASE_URL:", process.env.DATABASE_URL);
 const app = express();
 
+const allowedOrigins = [
+    'http://localhost:5174',
+    'https://zerobite-two.vercel.app', // main domain
+];
+
 app.use(cors({
-    origin: [
-        "http://localhost:5174",
-        "https://zerobite-two.vercel.app",
-        "https://zerobite-7ljbrb363-drashtisojitra2411-jpgs-projects.vercel.app"
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+
+        if (
+            allowedOrigins.includes(origin) ||
+            origin.endsWith('.vercel.app')
+        ) {
+            return callback(null, true);
+        }
+
+        return callback(new Error('CORS not allowed'));
+    },
     credentials: true
 }));
 
