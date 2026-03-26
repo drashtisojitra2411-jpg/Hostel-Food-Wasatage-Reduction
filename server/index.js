@@ -12,6 +12,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 console.log("DATABASE_URL:", process.env.DATABASE_URL);
 const app = express();
+
+app.use(cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+}));
+
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
 
@@ -107,24 +114,6 @@ pool.query('SELECT NOW()')
     })
     .catch(err => console.error('❌ Database connection failed:', err.message));
 
-// ─── Middleware ──────────────────────────────────────────────────────────────
-const corsOrigins = [
-    'http://localhost:5174',
-    'https://zerobite-two.vercel.app',
-    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean) : [])
-];
-
-const corsOptions = {
-    credentials: true,
-    origin(origin, callback) {
-        if (!origin) return callback(null, true);
-        if (corsOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error('CORS origin not allowed'));
-    }
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 app.use(express.json());
 
 app.get('/', (req, res) => {
