@@ -28,13 +28,16 @@ function mapScanError(message) {
     const normalized = String(message || '').toLowerCase()
 
     if (normalized.includes('permission') || normalized.includes('notallowederror')) {
-        return 'Camera permission denied. Allow camera access and try again.'
+        return 'Camera permission denied. Allow camera access in browser settings and try again.'
     }
     if (normalized.includes('https') || normalized.includes('secure context')) {
         return 'Camera access requires HTTPS on mobile browsers.'
     }
     if (normalized.includes('notfounderror')) {
         return 'No camera found on this device.'
+    }
+    if (normalized.includes('notreadableerror') || normalized.includes('trackstart')) {
+        return 'Camera is busy in another app. Close it and try again.'
     }
 
     return 'Unable to start camera. Please try again.'
@@ -59,10 +62,17 @@ function mapAttendanceError(message) {
     return message || 'Failed to mark attendance. Please try again.'
 }
 
+function stopMediaStream(stream) {
+    if (!stream) return
+    const tracks = stream.getTracks?.() || []
+    tracks.forEach((track) => track.stop())
+}
+
 export default function AttendanceScanner() {
     const scannerRef = useRef(null)
     const scannerCtorRef = useRef(null)
     const scanLockedRef = useRef(false)
+    const activeStreamRef = useRef(null)
 
     const [isScanning, setIsScanning] = useState(false)
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -87,20 +97,62 @@ export default function AttendanceScanner() {
         return scannerRef.current
     }, [])
 
+    const ensureVideoAttributes = useCallback(() => {
+        const videoEl = document.querySelector(`#${SCANNER_ID} video`)
+        if (!videoEl) return
+
+        videoEl.autoplay = true
+        videoEl.playsInline = true
+        videoEl.muted = true
+        videoEl.setAttribute('autoplay', 'true')
+        videoEl.setAttribute('playsinline', 'true')
+        videoEl.setAttribute('webkit-playsinline', 'true')
+    }, [])
+
     const stopScanner = useCallback(async () => {
         const scanner = scannerRef.current
-        if (!scanner) return
 
         try {
-            if (scanner.isScanning) {
+            if (scanner?.isScanning) {
+                console.info('[AttendanceScanner] Stopping QR scanner')
                 await scanner.stop()
             }
-            await scanner.clear()
-        } catch {
-            // No-op to keep cleanup safe.
+            if (scanner) {
+                await scanner.clear()
+            }
+        } catch (error) {
+            console.warn('[AttendanceScanner] Scanner stop error', error)
         } finally {
+            const videoEl = document.querySelector(`#${SCANNER_ID} video`)
+            const stream = videoEl?.srcObject
+            if (stream && typeof stream.getTracks === 'function') {
+                stopMediaStream(stream)
+            }
+            if (videoEl) {
+                videoEl.srcObject = null
+            }
+
+            stopMediaStream(activeStreamRef.current)
+            activeStreamRef.current = null
             setIsScanning(false)
         }
+    }, [])
+
+    const requestCameraPermission = useCallback(async () => {
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error('Camera API not supported in this browser')
+        }
+
+        console.info('[AttendanceScanner] Requesting camera permission')
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' },
+            audio: false
+        })
+
+        activeStreamRef.current = stream
+        console.info('[AttendanceScanner] Camera permission granted')
+        stopMediaStream(stream)
+        activeStreamRef.current = null
     }, [])
 
     const submitAttendance = useCallback(async (decodedText) => {
@@ -145,8 +197,11 @@ export default function AttendanceScanner() {
         const scanner = await ensureScanner()
 
         try {
+            await requestCameraPermission()
+
+            console.info('[AttendanceScanner] Starting QR scanner with back camera')
             await scanner.start(
-                { facingMode: { ideal: 'environment' } },
+                { facingMode: 'environment' },
                 {
                     fps: 10,
                     aspectRatio: 1,
@@ -166,12 +221,15 @@ export default function AttendanceScanner() {
                 () => null
             )
 
+            ensureVideoAttributes()
             setIsScanning(true)
             setStatus({ type: 'info', text: 'Scanner active. Keep QR inside the frame.' })
         } catch (error) {
-            setStatus({ type: 'error', text: mapScanError(error?.message) })
+            console.error('[AttendanceScanner] Camera error:', error)
+            setStatus({ type: 'error', text: mapScanError(error?.message || error?.name) })
+            await stopScanner()
         }
-    }, [ensureScanner, isScanning, isSecureContext, isSubmitting, stopScanner, submitAttendance])
+    }, [ensureScanner, ensureVideoAttributes, isScanning, isSecureContext, isSubmitting, requestCameraPermission, stopScanner, submitAttendance])
 
     useEffect(() => {
         return () => {
