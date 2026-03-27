@@ -6,6 +6,12 @@ import jwt from 'jsonwebtoken';
 import QRCode from 'qrcode';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import {
+    MEAL_ORDER,
+    getMealTimingForType,
+    normalizeMealTimingType,
+    toDbTime
+} from '../shared/mealTimings.js';
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -101,7 +107,7 @@ function normalizeDay(day) {
 }
 
 function normalizeMealType(mealType) {
-    const value = String(mealType || '').trim().toLowerCase();
+    const value = normalizeMealTimingType(mealType);
     return MENU_MEALS.includes(value) ? value : '';
 }
 
@@ -209,18 +215,22 @@ async function ensureAttendanceTables() {
         )`
     );
 
-    // Seed default meal timings if empty
-    const existing = await pool.query('SELECT COUNT(*)::int AS count FROM meal_timings');
-    if (existing.rows[0].count === 0) {
+    // Keep DB in sync with canonical shared timings
+    for (const mealName of MEAL_ORDER) {
+        const timing = getMealTimingForType(mealName);
+        if (!timing) continue;
+
         await pool.query(
-            `INSERT INTO meal_timings (meal_name, start_time, end_time) VALUES
-             ('breakfast', '07:30', '09:30'),
-             ('lunch',     '12:00', '14:00'),
-             ('dinner',    '19:00', '21:00')
-             ON CONFLICT (meal_name) DO NOTHING`
+            `INSERT INTO meal_timings (meal_name, start_time, end_time)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (meal_name)
+             DO UPDATE SET
+                start_time = EXCLUDED.start_time,
+                end_time = EXCLUDED.end_time`,
+            [mealName, timing.start, timing.end]
         );
-        console.log('🍽️  Default meal timings seeded (IST)');
     }
+    console.log('[MealTimings] Canonical timings synced');
 }
 
 // Test DB connection on startup
@@ -877,7 +887,18 @@ app.get('/api/meals', async (req, res) => {
         if (!date) return res.status(400).json({ error: 'Date parameter required' });
 
         const result = await pool.query('SELECT * FROM meals WHERE date = $1', [date]);
-        res.json(result.rows);
+        const rows = result.rows.map((meal) => {
+            const mealType = normalizeMealType(meal.meal_type);
+            const timing = getMealTimingForType(mealType);
+            if (!timing) return meal;
+
+            return {
+                ...meal,
+                start_time: toDbTime(timing.start),
+                end_time: toDbTime(timing.end)
+            };
+        });
+        res.json(rows);
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch meals' });
     }
@@ -886,20 +907,19 @@ app.get('/api/meals', async (req, res) => {
 // GET /api/meal-timings/current — Returns all meal windows and which is currently active (IST)
 app.get('/api/meal-timings/current', async (req, res) => {
     try {
-        const timingsRes = await pool.query('SELECT meal_name, start_time, end_time FROM meal_timings ORDER BY start_time');
-        const timings = timingsRes.rows;
         const ist = getISTNow();
 
         let activeMeal = null;
         let nextMeal = null;
         const currentMinutes = ist.hours * 60 + ist.minutes;
 
-        const meals = timings.map((t) => {
-            const startStr = String(t.start_time).slice(0, 5);
-            const endStr = String(t.end_time).slice(0, 5);
+        const meals = MEAL_ORDER.map((mealName) => {
+            const timing = getMealTimingForType(mealName);
+            const startStr = timing?.start || '';
+            const endStr = timing?.end || '';
             const check = isWithinMealTime(startStr, endStr);
             const entry = {
-                meal_name: t.meal_name,
+                meal_name: mealName,
                 start_time: startStr,
                 end_time: endStr,
                 start_time_display: formatTime12h(startStr),
@@ -963,19 +983,9 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
 
         const mealType = normalizeMealType(meal.meal_type);
 
-        // Fetch authoritative timing from meal_timings table
-        let displayStart = String(meal.start_time || '').slice(0, 5);
-        let displayEnd = String(meal.end_time || '').slice(0, 5);
-        if (mealType) {
-            const timingRes = await pool.query(
-                'SELECT start_time, end_time FROM meal_timings WHERE meal_name = $1',
-                [mealType]
-            );
-            if (timingRes.rows.length > 0) {
-                displayStart = String(timingRes.rows[0].start_time).slice(0, 5);
-                displayEnd = String(timingRes.rows[0].end_time).slice(0, 5);
-            }
-        }
+        const canonicalTiming = getMealTimingForType(mealType);
+        const displayStart = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
+        const displayEnd = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
         const ist = getISTNow();
         const token = jwt.sign(
@@ -1074,29 +1084,19 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
             return res.status(400).json({ error: 'Invalid QR for current date' });
         }
 
-        // IST-aware time window check using meal_timings table
+        // IST-aware time window check using canonical shared meal timings
         const mealType = normalizeMealType(meal.meal_type);
-        let startTime = String(meal.start_time || '').slice(0, 5);
-        let endTime = String(meal.end_time || '').slice(0, 5);
-
-        // Override with meal_timings table if available
-        if (mealType) {
-            const timingRes = await client.query(
-                'SELECT start_time, end_time FROM meal_timings WHERE meal_name = $1',
-                [mealType]
-            );
-            if (timingRes.rows.length > 0) {
-                startTime = String(timingRes.rows[0].start_time).slice(0, 5);
-                endTime = String(timingRes.rows[0].end_time).slice(0, 5);
-            }
-        }
+        const canonicalTiming = getMealTimingForType(mealType);
+        const startTime = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
+        const endTime = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
         const timeCheck = isWithinMealTime(startTime, endTime);
         console.log(`[Attendance] IST time: ${timeCheck.currentTime}, meal window: ${timeCheck.startTime}-${timeCheck.endTime}, within: ${timeCheck.within}`);
 
         if (!timeCheck.within) {
             return res.status(400).json({
-                error: `Attendance is allowed from ${formatTime12h(startTime)} to ${formatTime12h(endTime)} IST`,
+                error: 'Meal time is over',
+                detail: `Attendance is allowed from ${formatTime12h(startTime)} to ${formatTime12h(endTime)} IST`,
                 allowed_window: { start: startTime, end: endTime },
                 current_time_ist: timeCheck.currentTime
             });

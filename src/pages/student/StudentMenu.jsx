@@ -124,9 +124,10 @@ export default function StudentMenu() {
                                         <div className="space-y-4">
                                             {MEAL_TYPES.map((mealType) => {
                                                 const options = menuOptions?.[day]?.[mealType] || []
+                                                const uniqueOptions = [...new Set(options.map((opt) => String(opt).trim()).filter(Boolean))]
                                                 const selected = selectedVotes?.[`${day}_${mealType}`] || ''
                                                 const voted = myVotes?.[`${day}_${mealType}`]
-                                                const finalItem = finalMenu?.[day]?.[mealType] || options[0] || 'Not available'
+                                                const finalItem = finalMenu?.[day]?.[mealType] || uniqueOptions[0] || 'Not available'
 
                                                 return (
                                                     <div key={`${day}-${mealType}`} className="rounded-xl border border-white/10 bg-black/30 p-3">
@@ -136,20 +137,25 @@ export default function StudentMenu() {
                                                         </div>
 
                                                         {isVotingTime ? (
-                                                            <select
-                                                                value={selected}
-                                                                onChange={(e) => handleSelect(day, mealType, e.target.value)}
-                                                                className="w-full rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2.5 text-sm text-white outline-none focus:border-creative-lime"
-                                                            >
-                                                                <option value="" className="bg-black text-white">
-                                                                    Select an option
-                                                                </option>
-                                                                {options.map((option) => (
-                                                                    <option key={option} value={option} className="bg-black text-white">
-                                                                        {option}
+                                                            <div className="relative">
+                                                                <select
+                                                                    value={selected}
+                                                                    onChange={(e) => handleSelect(day, mealType, e.target.value)}
+                                                                    className="w-full appearance-none rounded-lg border border-white/15 bg-black/60 px-3 py-2.5 pr-9 text-sm text-white outline-none transition-all duration-200 hover:border-white/30 focus:border-creative-lime focus:ring-2 focus:ring-creative-lime/20"
+                                                                >
+                                                                    <option value="" className="bg-black text-white">
+                                                                        Select an option
                                                                     </option>
-                                                                ))}
-                                                            </select>
+                                                                    {uniqueOptions.map((option) => (
+                                                                        <option key={option} value={option} className="bg-black text-white">
+                                                                            {option}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-white/60">
+                                                                    v
+                                                                </span>
+                                                            </div>
                                                         ) : (
                                                             <p className="text-sm text-white/85">{finalItem}</p>
                                                         )}

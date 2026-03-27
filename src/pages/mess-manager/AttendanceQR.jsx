@@ -108,17 +108,22 @@ export default function AttendanceQR() {
                     <Card variant="glass" className="p-6 sm:p-8 space-y-5">
                         <div>
                             <label className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2 block">Select Meal</label>
-                            <select
-                                value={selectedMealId}
-                                onChange={(e) => { setSelectedMealId(e.target.value); setQrData(null); }}
-                                className="w-full rounded-xl bg-white/5 border border-white/10 p-4 text-sm font-bold focus:border-creative-lime/50 focus:outline-none transition-colors"
-                            >
-                                {meals.map((meal) => (
-                                    <option key={meal.id} value={meal.id}>
-                                        {String(meal.meal_type).toUpperCase()} | {String(meal.start_time || '').slice(0, 5)} – {String(meal.end_time || '').slice(0, 5)}
-                                    </option>
-                                ))}
-                            </select>
+                            <div className="relative">
+                                <select
+                                    value={selectedMealId}
+                                    onChange={(e) => { setSelectedMealId(e.target.value); setQrData(null); }}
+                                    className="w-full appearance-none rounded-xl border border-white/15 bg-black/60 px-4 py-3 pr-12 text-sm font-semibold text-white transition-all duration-200 hover:border-white/30 focus:border-creative-lime/60 focus:outline-none focus:ring-2 focus:ring-creative-lime/20"
+                                >
+                                    {meals.map((meal) => (
+                                        <option key={meal.id} value={meal.id} className="bg-black text-white">
+                                            {String(meal.meal_type).toUpperCase()} | {String(meal.start_time || '').slice(0, 5)} – {String(meal.end_time || '').slice(0, 5)}
+                                        </option>
+                                    ))}
+                                </select>
+                                <span className="pointer-events-none absolute inset-y-0 right-4 flex items-center text-white/60">
+                                    v
+                                </span>
+                            </div>
                         </div>
                         <Button onClick={generateQr} isLoading={loading} disabled={!selectedMealId} className="w-full !min-h-[52px] !font-bold">
                             🔑 GENERATE QR CODE

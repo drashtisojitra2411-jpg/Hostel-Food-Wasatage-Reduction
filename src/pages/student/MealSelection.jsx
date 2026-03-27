@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Navigation from '../../components/layout/Navigation'
 import api from '../../lib/api'
+import { getMealTimingForType } from '../../../shared/mealTimings'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -14,10 +15,16 @@ const fallbackMenu = {
     Sunday: { breakfast: 'Chole Bhature', lunch: 'Special Thali', dinner: 'Special Meal' }
 }
 
+function getMealWindowLabel(mealType) {
+    const timing = getMealTimingForType(mealType)
+    if (!timing) return '--:-- - --:--'
+    return `${timing.start} - ${timing.end}`
+}
+
 const mealMeta = {
-    breakfast: { icon: '🍳', title: 'BREAKFAST', time: '07:30 - 09:30' },
-    lunch: { icon: '🍛', title: 'LUNCH', time: '12:30 - 14:30' },
-    dinner: { icon: '🌙', title: 'DINNER', time: '19:30 - 21:30' }
+    breakfast: { icon: '🍳', title: 'BREAKFAST', time: getMealWindowLabel('breakfast') },
+    lunch: { icon: '🍛', title: 'LUNCH', time: getMealWindowLabel('lunch') },
+    dinner: { icon: '🌙', title: 'DINNER', time: getMealWindowLabel('dinner') }
 }
 
 export default function FinalMenu() {

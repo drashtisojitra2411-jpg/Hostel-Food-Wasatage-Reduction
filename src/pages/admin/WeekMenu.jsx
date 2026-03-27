@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import AdminLayout from '../../components/admin/AdminLayout';
 import api from '../../lib/api';
+import { getMealTimingForType } from '../../../shared/mealTimings';
 
 const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const mealTypes = ['breakfast', 'lunch', 'dinner'];
@@ -57,11 +58,12 @@ export default function WeekMenu() {
     async function saveMeal(type) {
         setError('');
         try {
+            const timing = getMealTimingForType(type);
             await api.put('/api/admin/week-menu', {
                 date: toIsoDateFromMonday(dayIndex),
                 meal_type: type,
-                start_time: type === 'breakfast' ? '08:00' : type === 'lunch' ? '13:00' : '20:00',
-                end_time: type === 'breakfast' ? '10:00' : type === 'lunch' ? '15:00' : '22:00',
+                start_time: timing?.start || '00:00',
+                end_time: timing?.end || '00:00',
                 items: String(menu?.[day]?.[type] || '').split(',').map((x) => x.trim()).filter(Boolean)
             });
         } catch (saveError) {

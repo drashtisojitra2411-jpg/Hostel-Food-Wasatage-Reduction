@@ -178,8 +178,8 @@ export default function AttendanceScanner() {
                 showToast('⏰ QR code has expired. Please ask for a new QR code.', 'warning')
             } else if (normalized.includes('already marked') || normalized.includes('already')) {
                 showToast('You have already marked attendance for this meal.', 'warning')
-            } else if (normalized.includes('outside') || normalized.includes('allowed from')) {
-                showToast(msg, 'warning')
+            } else if (normalized.includes('meal time is over') || normalized.includes('outside') || normalized.includes('allowed from')) {
+                showToast('Meal time is over', 'warning')
             } else if (normalized.includes('invalid qr') || normalized.includes('invalid')) {
                 showToast('Invalid QR code. Please scan the official hostel QR.', 'error')
             } else {

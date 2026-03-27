@@ -3,6 +3,7 @@ import Navigation from '../../components/layout/Navigation';
 import Button from '../../components/common/Button';
 import Card from '../../components/common/Card';
 import api from '../../lib/api';
+import { getMealTimingForType } from '../../../shared/mealTimings';
 
 const days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const mealTypes = ['breakfast', 'lunch', 'dinner'];
@@ -60,11 +61,12 @@ export default function MenuManager() {
     async function saveMeal(mealType) {
         setError('');
         try {
+            const timing = getMealTimingForType(mealType);
             await api.put('/api/admin/week-menu', {
                 date: toIsoDateFromMonday(dayIndex),
                 meal_type: mealType,
-                start_time: mealType === 'breakfast' ? '08:00' : mealType === 'lunch' ? '13:00' : '20:00',
-                end_time: mealType === 'breakfast' ? '10:00' : mealType === 'lunch' ? '15:00' : '22:00',
+                start_time: timing?.start || '00:00',
+                end_time: timing?.end || '00:00',
                 items: String(menu?.[activeDay]?.[mealType] || '').split(',').map((x) => x.trim()).filter(Boolean)
             });
         } catch (saveError) {
