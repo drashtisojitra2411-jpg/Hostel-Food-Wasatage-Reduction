@@ -5,6 +5,7 @@ import Button from '../../components/common/Button';
 import Toast from '../../components/common/Toast';
 import api from '../../lib/api';
 import { formatTime12h, getMealTimingForType } from '../../../shared/mealTimings';
+import { ATTENDANCE_QR_EXPECTED_FORMAT } from '../../../shared/attendanceQr';
 
 export default function AttendanceQR() {
     const [meals, setMeals] = useState([]);
@@ -137,6 +138,9 @@ export default function AttendanceQR() {
                                 )}
                                 <p className="text-sm font-bold uppercase tracking-wider text-white/60">
                                     Valid until this meal window ends
+                                </p>
+                                <p className="text-xs text-white/35">
+                                    QR format: {ATTENDANCE_QR_EXPECTED_FORMAT}
                                 </p>
                             </div>
                         </Card>

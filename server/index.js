@@ -12,6 +12,11 @@ import {
     normalizeMealTimingType,
     toDbTime
 } from '../shared/mealTimings.js';
+import {
+    ATTENDANCE_QR_EXPECTED_FORMAT,
+    buildAttendanceQrPayload,
+    parseAttendanceQrPayload
+} from '../shared/attendanceQr.js';
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -162,32 +167,6 @@ function formatTime12h(timeStr) {
     const period = h >= 12 ? 'PM' : 'AM';
     const h12 = h % 12 || 12;
     return `${h12}:${String(m).padStart(2, '0')} ${period}`;
-}
-
-function extractMealTypeFromQrPayload(input) {
-    if (input === null || input === undefined) return '';
-
-    const direct = normalizeMealType(input);
-    if (direct) return direct;
-
-    const raw = String(input).trim();
-    if (!raw) return '';
-
-    if (raw.startsWith('{')) {
-        try {
-            const parsed = JSON.parse(raw);
-            return (
-                normalizeMealType(parsed?.meal_type) ||
-                normalizeMealType(parsed?.mealType) ||
-                normalizeMealType(parsed?.meal) ||
-                ''
-            );
-        } catch {
-            return '';
-        }
-    }
-
-    return normalizeMealType(raw);
 }
 
 async function ensureMenuVotingTable() {
@@ -1008,10 +987,10 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         const displayStart = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
         const displayEnd = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
-        const qrPayload = JSON.stringify({ meal_type: mealType });
+        const qrPayload = buildAttendanceQrPayload(mealType);
         const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
 
-        console.log(`[QR] Generated for ${mealType} (${meal.id})`);
+        console.log(`[QR] Generated for ${mealType} (${meal.id}) with payload ${qrPayload}`);
 
         return res.json({
             meal_id: meal.id,
@@ -1042,11 +1021,14 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
             qr_token: body.qr_token
         });
 
-        const scannedMealType = (
-            extractMealTypeFromQrPayload(body.qr_data) ||
-            extractMealTypeFromQrPayload(body.meal_type) ||
-            extractMealTypeFromQrPayload(body.qr_token)
-        );
+        const parsedQrData = parseAttendanceQrPayload(body.qr_data);
+        const parsedMealType = parseAttendanceQrPayload(body.meal_type);
+        const parsedQrToken = parseAttendanceQrPayload(body.qr_token);
+        const scannedMealType = parsedQrData.mealType || parsedMealType.mealType || parsedQrToken.mealType;
+
+        console.log('[Attendance] Raw scanned QR value:', parsedQrData.rawValue || parsedMealType.rawValue || parsedQrToken.rawValue);
+        console.log('[Attendance] Parsed QR data:', parsedQrData.parsedValue ?? parsedMealType.parsedValue ?? parsedQrToken.parsedValue ?? null);
+        console.log('[Attendance] Expected format:', ATTENDANCE_QR_EXPECTED_FORMAT);
 
         if (!scannedMealType) {
             return res.status(400).json({ error: 'Invalid QR code' });
@@ -1076,7 +1058,7 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
             [scannedMealType, ist.dateString]
         );
         if (mealRes.rows.length === 0) {
-            return res.status(400).json({ error: 'Invalid QR code' });
+            return res.status(404).json({ error: 'No meal found for scanned meal type today' });
         }
 
         const meal = mealRes.rows[0];

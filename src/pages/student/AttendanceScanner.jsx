@@ -6,25 +6,10 @@ import Card from '../../components/common/Card'
 import Toast from '../../components/common/Toast'
 import api from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
+import { ATTENDANCE_QR_EXPECTED_FORMAT, parseAttendanceQrPayload } from '../../../shared/attendanceQr'
 
 const SCANNER_ID = 'student-attendance-scanner'
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
-
-function extractMealType(decodedText) {
-    if (!decodedText) return null
-    const raw = String(decodedText).trim()
-
-    if (raw.startsWith('{')) {
-        try {
-            const parsed = JSON.parse(raw)
-            return parsed.meal_type || parsed.mealType || parsed.meal || null
-        } catch {
-            return raw
-        }
-    }
-
-    return raw
-}
 
 function stopMediaStream(stream) {
     if (!stream) return
@@ -151,9 +136,12 @@ export default function AttendanceScanner() {
     }, [])
 
     const submitAttendance = useCallback(async (decodedText) => {
-        const mealType = extractMealType(decodedText)
+        const parsedQr = parseAttendanceQrPayload(decodedText)
+        console.log('[AttendanceScanner] Raw scanned QR value:', parsedQr.rawValue)
+        console.log('[AttendanceScanner] Parsed QR data:', parsedQr.parsedValue)
+        console.log('[AttendanceScanner] Expected QR format:', parsedQr.format)
 
-        if (!mealType) {
+        if (!parsedQr.isValid) {
             showToast('Invalid QR code. Please scan a valid attendance QR.', 'error')
             scanLockedRef.current = false
             return
@@ -163,7 +151,7 @@ export default function AttendanceScanner() {
 
         try {
             const response = await api.post('/api/attendance', {
-                meal_type: mealType,
+                meal_type: parsedQr.mealType,
                 qr_data: decodedText
             })
 
@@ -178,7 +166,7 @@ export default function AttendanceScanner() {
                 showToast('Attendance already marked', 'warning')
             } else if (normalized.includes('meal time is over') || normalized.includes('outside') || normalized.includes('allowed from')) {
                 showToast('Meal time is over', 'warning')
-            } else if (normalized.includes('invalid qr') || normalized.includes('invalid')) {
+            } else if (normalized.includes('invalid qr code')) {
                 showToast('Invalid QR code. Please scan the official hostel QR.', 'error')
             } else {
                 showToast(msg, 'error')
@@ -379,6 +367,9 @@ export default function AttendanceScanner() {
                                 <li>⏱ Hold camera steady for 1-2 seconds</li>
                                 <li>🔄 QR stays valid during the meal window</li>
                             </ul>
+                            <p className="text-xs text-white/35 mt-3">
+                                Expected QR format: {ATTENDANCE_QR_EXPECTED_FORMAT}
+                            </p>
                             {!isSecureContext && (
                                 <p className="text-xs text-yellow-300 mt-3">
                                     ⚠ Camera works only on HTTPS (or localhost).

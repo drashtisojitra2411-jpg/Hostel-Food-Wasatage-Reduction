@@ -1,1 +1,0 @@
-const i={BREAKFAST:"07:30-09:30",LUNCH:"12:30-14:30",DINNER:"19:30-21:30"};function o(r){const[n="",t=""]=String(r||"").split("-");return{start:n,end:t}}function a(r){const n=String(r||"").trim().toLowerCase();return n==="breakfast"||n==="lunch"||n==="dinner"?n:""}function s(r){const n=a(r);if(!n)return null;const t=n.toUpperCase(),e=i[t];return e?o(e):null}export{s as g};
