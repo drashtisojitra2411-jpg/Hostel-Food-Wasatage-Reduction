@@ -10,14 +10,14 @@ import { useAuth } from '../../context/AuthContext'
 const SCANNER_ID = 'student-attendance-scanner'
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
 
-function extractToken(decodedText) {
+function extractMealType(decodedText) {
     if (!decodedText) return null
     const raw = String(decodedText).trim()
 
     if (raw.startsWith('{')) {
         try {
             const parsed = JSON.parse(raw)
-            return parsed.token || parsed.qr_token || null
+            return parsed.meal_type || parsed.mealType || parsed.meal || null
         } catch {
             return raw
         }
@@ -151,9 +151,9 @@ export default function AttendanceScanner() {
     }, [])
 
     const submitAttendance = useCallback(async (decodedText) => {
-        const token = extractToken(decodedText)
+        const mealType = extractMealType(decodedText)
 
-        if (!token) {
+        if (!mealType) {
             showToast('Invalid QR code. Please scan a valid attendance QR.', 'error')
             scanLockedRef.current = false
             return
@@ -163,21 +163,19 @@ export default function AttendanceScanner() {
 
         try {
             const response = await api.post('/api/attendance', {
-                qr_token: token,
+                meal_type: mealType,
                 qr_data: decodedText
             })
 
             setLastAttendance(response)
             setSuccess('Attendance successfully recorded')
-            showToast('✅ Attendance successfully recorded!', 'success')
+            showToast(response?.message || 'Attendance successfully recorded', 'success')
         } catch (error) {
             const msg = error?.message || 'Failed to mark attendance'
             const normalized = msg.toLowerCase()
 
-            if (normalized.includes('expired')) {
-                showToast('⏰ QR code has expired. Please ask for a new QR code.', 'warning')
-            } else if (normalized.includes('already marked') || normalized.includes('already')) {
-                showToast('You have already marked attendance for this meal.', 'warning')
+            if (normalized.includes('already marked') || normalized.includes('already')) {
+                showToast('Attendance already marked', 'warning')
             } else if (normalized.includes('meal time is over') || normalized.includes('outside') || normalized.includes('allowed from')) {
                 showToast('Meal time is over', 'warning')
             } else if (normalized.includes('invalid qr') || normalized.includes('invalid')) {
@@ -379,7 +377,7 @@ export default function AttendanceScanner() {
                                 <li>📌 Use the hostel-issued QR only</li>
                                 <li>📐 Keep QR fully inside the frame</li>
                                 <li>⏱ Hold camera steady for 1-2 seconds</li>
-                                <li>🔄 If expired, request a fresh QR</li>
+                                <li>🔄 QR stays valid during the meal window</li>
                             </ul>
                             {!isSecureContext && (
                                 <p className="text-xs text-yellow-300 mt-3">
@@ -429,3 +427,4 @@ export default function AttendanceScanner() {
         </div>
     )
 }
+

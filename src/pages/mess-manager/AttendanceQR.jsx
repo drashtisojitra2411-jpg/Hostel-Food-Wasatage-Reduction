@@ -4,6 +4,7 @@ import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
 import Toast from '../../components/common/Toast';
 import api from '../../lib/api';
+import { formatTime12h, getMealTimingForType } from '../../../shared/mealTimings';
 
 export default function AttendanceQR() {
     const [meals, setMeals] = useState([]);
@@ -61,23 +62,12 @@ export default function AttendanceQR() {
         setToastType(type);
     }
 
-    // Auto-refresh QR countdown
-    const [expiryCountdown, setExpiryCountdown] = useState('');
-    useEffect(() => {
-        if (!qrData?.expires_at) return undefined;
-        const interval = setInterval(() => {
-            const remaining = Math.max(0, Math.floor((new Date(qrData.expires_at) - Date.now()) / 1000));
-            if (remaining <= 0) {
-                setExpiryCountdown('Expired');
-                clearInterval(interval);
-            } else {
-                const m = Math.floor(remaining / 60);
-                const s = remaining % 60;
-                setExpiryCountdown(`${m}:${String(s).padStart(2, '0')}`);
-            }
-        }, 1000);
-        return () => clearInterval(interval);
-    }, [qrData?.expires_at]);
+    function getMealDisplayWindow(meal) {
+        const timing = getMealTimingForType(meal?.meal_type);
+        const start = timing?.start || String(meal?.start_time || '').slice(0, 5);
+        const end = timing?.end || String(meal?.end_time || '').slice(0, 5);
+        return `${formatTime12h(start)} - ${formatTime12h(end)}`;
+    }
 
     return (
         <div className="min-h-screen bg-black text-white selection:bg-creative-lime selection:text-black">
@@ -86,10 +76,9 @@ export default function AttendanceQR() {
                 <div className="max-w-3xl mx-auto space-y-6">
                     <Card variant="premium" className="p-6 sm:p-8">
                         <h1 className="text-3xl sm:text-4xl font-black italic tracking-tight uppercase mb-2">Attendance QR Generator</h1>
-                        <p className="text-sm text-white/50 font-medium">Generate a time-limited QR for active meal attendance.</p>
+                        <p className="text-sm text-white/50 font-medium">Generate attendance QR for the active meal window.</p>
                     </Card>
 
-                    {/* Active Meal Indicator */}
                     {mealWindow?.active_meal && (
                         <div className="rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3 flex items-center gap-3">
                             <span className="relative flex h-3 w-3">
@@ -99,7 +88,7 @@ export default function AttendanceQR() {
                             <p className="text-sm font-semibold text-creative-lime">
                                 {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} window active
                                 <span className="font-normal text-white/50 ml-2">
-                                    {mealWindow.active_meal.start_time_display} – {mealWindow.active_meal.end_time_display}
+                                    {mealWindow.active_meal.start_time_display} - {mealWindow.active_meal.end_time_display}
                                 </span>
                             </p>
                         </div>
@@ -116,7 +105,7 @@ export default function AttendanceQR() {
                                 >
                                     {meals.map((meal) => (
                                         <option key={meal.id} value={meal.id} className="bg-black text-white">
-                                            {String(meal.meal_type).toUpperCase()} | {String(meal.start_time || '').slice(0, 5)} – {String(meal.end_time || '').slice(0, 5)}
+                                            {String(meal.meal_type).toUpperCase()} | {getMealDisplayWindow(meal)}
                                         </option>
                                     ))}
                                 </select>
@@ -126,7 +115,7 @@ export default function AttendanceQR() {
                             </div>
                         </div>
                         <Button onClick={generateQr} isLoading={loading} disabled={!selectedMealId} className="w-full !min-h-[52px] !font-bold">
-                            🔑 GENERATE QR CODE
+                            GENERATE QR CODE
                         </Button>
                     </Card>
 
@@ -143,19 +132,16 @@ export default function AttendanceQR() {
                                 </p>
                                 {qrData.timing && (
                                     <p className="text-sm text-white/50">
-                                        Window: {qrData.timing.start_display} – {qrData.timing.end_display}
+                                        Window: {qrData.timing.start_display} - {qrData.timing.end_display}
                                     </p>
                                 )}
-                                <p className={`text-sm font-bold uppercase tracking-wider ${
-                                    expiryCountdown === 'Expired' ? 'text-red-400' : 'text-white/60'
-                                }`}>
-                                    {expiryCountdown === 'Expired' ? '❌ EXPIRED — Generate a new QR' : `⏱ Expires in ${expiryCountdown}`}
+                                <p className="text-sm font-bold uppercase tracking-wider text-white/60">
+                                    Valid until this meal window ends
                                 </p>
                             </div>
                         </Card>
                     )}
 
-                    {/* Meal Schedule Reference */}
                     {mealWindow?.all_timings && (
                         <Card variant="glass" className="p-5">
                             <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">Meal Schedule (IST)</h2>
@@ -170,7 +156,7 @@ export default function AttendanceQR() {
                                         }`}
                                     >
                                         <p className="text-xs font-bold uppercase">{t.meal_name}</p>
-                                        <p className="text-sm mt-1">{t.start_time_display} – {t.end_time_display}</p>
+                                        <p className="text-sm mt-1">{t.start_time_display} - {t.end_time_display}</p>
                                     </div>
                                 ))}
                             </div>

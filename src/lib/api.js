@@ -56,7 +56,7 @@ apiClient.interceptors.response.use(
         if (!error.response) {
             message = rawMessage || 'Request failed to reach the server.';
         } else if (status >= 500) {
-            message = 'Server error. Please try again in a moment.';
+            message = rawMessage || 'Server error. Please try again in a moment.';
         } else if (status === 403) {
             message = rawMessage || 'You do not have permission for this action.';
         } else if (status === 401) {

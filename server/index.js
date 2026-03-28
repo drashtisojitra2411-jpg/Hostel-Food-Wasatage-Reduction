@@ -52,7 +52,6 @@ const pool = new pg.Pool({
 
 const MENU_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MENU_MEALS = ['breakfast', 'lunch', 'dinner'];
-const ATTENDANCE_QR_TTL_SECONDS = 300;
 const DEFAULT_MEAL_BASE_FEE = 120;
 const DEFAULT_MENU_OPTIONS = {
     Monday: {
@@ -163,6 +162,32 @@ function formatTime12h(timeStr) {
     const period = h >= 12 ? 'PM' : 'AM';
     const h12 = h % 12 || 12;
     return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+function extractMealTypeFromQrPayload(input) {
+    if (input === null || input === undefined) return '';
+
+    const direct = normalizeMealType(input);
+    if (direct) return direct;
+
+    const raw = String(input).trim();
+    if (!raw) return '';
+
+    if (raw.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(raw);
+            return (
+                normalizeMealType(parsed?.meal_type) ||
+                normalizeMealType(parsed?.mealType) ||
+                normalizeMealType(parsed?.meal) ||
+                ''
+            );
+        } catch {
+            return '';
+        }
+    }
+
+    return normalizeMealType(raw);
 }
 
 async function ensureMenuVotingTable() {
@@ -969,7 +994,7 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         }
 
         const mealRes = await pool.query(
-            "SELECT id, meal_type, date, start_time, end_time, is_active FROM meals WHERE id = $1",
+            "SELECT id, meal_type, date, start_time, end_time FROM meals WHERE id = $1",
             [mealId]
         );
         if (mealRes.rows.length === 0) {
@@ -977,40 +1002,21 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         }
 
         const meal = mealRes.rows[0];
-        if (!meal.is_active) {
-            return res.status(400).json({ error: 'Meal is not active' });
-        }
-
         const mealType = normalizeMealType(meal.meal_type);
 
         const canonicalTiming = getMealTimingForType(mealType);
         const displayStart = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
         const displayEnd = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
-        const ist = getISTNow();
-        const token = jwt.sign(
-            {
-                type: 'attendance_qr',
-                meal_id: meal.id,
-                meal_type: mealType,
-                issued_by: req.user.id,
-                generated_at: ist.timeString,
-            },
-            JWT_SECRET,
-            { expiresIn: ATTENDANCE_QR_TTL_SECONDS }
-        );
-        const expiresAt = new Date(Date.now() + ATTENDANCE_QR_TTL_SECONDS * 1000);
-        const qrPayload = JSON.stringify({ qr_token: token, meal_id: meal.id });
+        const qrPayload = JSON.stringify({ meal_type: mealType });
         const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
 
-        console.log(`[QR] Generated for ${mealType} (${meal.id}), expires ${expiresAt.toISOString()}`);
+        console.log(`[QR] Generated for ${mealType} (${meal.id})`);
 
         return res.json({
             meal_id: meal.id,
             meal_type: mealType,
-            qr_token: token,
             qr_image: qrImage,
-            expires_at: expiresAt.toISOString(),
             timing: {
                 start: displayStart,
                 end: displayEnd,
@@ -1029,64 +1035,54 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
     const client = await pool.connect();
     let transactionStarted = false;
     try {
-        let { qr_token, qr_data } = req.body || {};
-        if (!qr_token && qr_data) {
-            const raw = String(qr_data || '').trim();
-            if (raw.startsWith('{')) {
-                try {
-                    const parsed = JSON.parse(raw);
-                    qr_token = parsed?.qr_token || parsed?.token || qr_token;
-                } catch {
-                    qr_token = raw;
-                }
-            } else {
-                qr_token = raw;
-            }
-        }
+        const body = req.body || {};
+        console.log('[Attendance] QR data received:', {
+            qr_data: body.qr_data,
+            meal_type: body.meal_type,
+            qr_token: body.qr_token
+        });
 
-        if (!qr_token) {
-            return res.status(400).json({ error: 'Invalid QR payload' });
-        }
+        const scannedMealType = (
+            extractMealTypeFromQrPayload(body.qr_data) ||
+            extractMealTypeFromQrPayload(body.meal_type) ||
+            extractMealTypeFromQrPayload(body.qr_token)
+        );
 
-        let payload;
-        try {
-            payload = jwt.verify(qr_token, JWT_SECRET);
-        } catch (error) {
-            if (error?.name === 'TokenExpiredError') {
-                return res.status(400).json({ error: 'QR expired' });
-            }
+        if (!scannedMealType) {
             return res.status(400).json({ error: 'Invalid QR code' });
         }
 
-        if (payload?.type !== 'attendance_qr' || !payload?.meal_id) {
-            return res.status(400).json({ error: 'Invalid QR code' });
-        }
+        const ist = getISTNow();
+        console.log(`[Attendance] Current IST: ${ist.dateString} ${ist.timeString}`);
+
+        const timingCheck = isWithinMealTime(
+            getMealTimingForType(scannedMealType)?.start || '',
+            getMealTimingForType(scannedMealType)?.end || ''
+        );
+        console.log('[Attendance] Meal validation result:', {
+            meal_type: scannedMealType,
+            within_window: timingCheck.within,
+            current_time: timingCheck.currentTime,
+            start_time: timingCheck.startTime,
+            end_time: timingCheck.endTime
+        });
 
         const mealRes = await client.query(
-            `SELECT id, date, meal_type, start_time, end_time, is_active
+            `SELECT id, date, meal_type, start_time, end_time
              FROM meals
-             WHERE id = $1`,
-            [payload.meal_id]
+             WHERE meal_type = $1 AND date = $2
+             ORDER BY start_time ASC
+             LIMIT 1`,
+            [scannedMealType, ist.dateString]
         );
         if (mealRes.rows.length === 0) {
-            return res.status(404).json({ error: 'Meal not found for QR' });
+            return res.status(400).json({ error: 'Invalid QR code' });
         }
 
         const meal = mealRes.rows[0];
-        if (!meal.is_active) {
-            return res.status(400).json({ error: 'Meal is not active' });
-        }
-
-        // IST-aware date check
-        const ist = getISTNow();
-        const mealDateStr = new Date(meal.date).toLocaleDateString('en-CA', { timeZone: IST_TIMEZONE });
-        if (ist.dateString !== mealDateStr) {
-            return res.status(400).json({ error: 'Invalid QR for current date' });
-        }
-
         // IST-aware time window check using canonical shared meal timings
-        const mealType = normalizeMealType(meal.meal_type);
-        const canonicalTiming = getMealTimingForType(mealType);
+        const mealType = normalizeMealType(meal.meal_type) || scannedMealType;
+        const canonicalTiming = getMealTimingForType(mealType) || getMealTimingForType(scannedMealType);
         const startTime = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
         const endTime = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
@@ -1108,17 +1104,17 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         let attendance;
         try {
             const insertRes = await client.query(
-                `INSERT INTO attendance (user_id, meal_id, qr_token_id)
-                 VALUES ($1, $2, $3)
+                `INSERT INTO attendance (user_id, meal_id)
+                 VALUES ($1, $2)
                  RETURNING id, scanned_at`,
-                [req.user.id, meal.id, payload.iat ? String(payload.iat) : null]
+                [req.user.id, meal.id]
             );
             attendance = insertRes.rows[0];
         } catch (error) {
             if (error.code === '23505') {
                 await client.query('ROLLBACK');
                 transactionStarted = false;
-                return res.status(409).json({ error: 'You have already marked attendance' });
+                return res.status(409).json({ error: 'Attendance already marked' });
             }
             throw error;
         }
@@ -1171,8 +1167,11 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         if (transactionStarted) {
             await client.query('ROLLBACK');
         }
-        console.error('Attendance scan error:', error);
-        return res.status(500).json({ error: 'Failed to mark attendance' });
+        console.error('Attendance scan error:', {
+            message: error?.message,
+            stack: error?.stack
+        });
+        return res.status(500).json({ error: 'Unable to process attendance right now' });
     } finally {
         client.release();
     }
