@@ -2398,6 +2398,28 @@ app.get('/api/donations', optionalAuth, async (req, res) => {
     }
 });
 
+app.get('/api/impact', optionalAuth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                COUNT(*)::int AS meals_rescued,
+                COALESCE(SUM(total_quantity_kg), 0)::float AS food_saved
+             FROM donations
+             WHERE status = 'completed'`
+        );
+
+        const stats = result.rows[0] || {};
+
+        res.json({
+            meals_rescued: Number(stats.meals_rescued) || 0,
+            food_saved: Number(stats.food_saved) || 0
+        });
+    } catch (error) {
+        console.error('Impact stats error:', error);
+        res.status(500).json({ error: 'Failed to fetch impact stats' });
+    }
+});
+
 // POST /api/donations - Create donation entry
 app.post('/api/donations', authMiddleware, requireRole(['super_admin', 'mess_manager', 'chef']), async (req, res) => {
     try {
