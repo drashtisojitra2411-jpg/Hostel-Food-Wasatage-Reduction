@@ -24,7 +24,6 @@ const AttendancePage = lazy(() => import('./pages/attendance/AttendancePage'))
 const ChefDashboard = lazy(() => import('./pages/chef/ChefDashboard'))
 const NGODashboard = lazy(() => import('./pages/ngo/NGODashboard'))
 
-const Impact = lazy(() => import('./pages/student/Impact'))
 const Feedback = lazy(() => import('./pages/student/Feedback'))
 const Settings = lazy(() => import('./pages/student/Settings'))
 const StudentMenu = lazy(() => import('./pages/student/StudentMenu'))
@@ -68,7 +67,6 @@ export default function App() {
 
                 <Route path="/dashboard" element={<ProtectedRoute allowedRoles={['student']}><StudentDashboard /></ProtectedRoute>} />
                 <Route path="/meal-booking" element={<ProtectedRoute allowedRoles={['student']}><MealBooking /></ProtectedRoute>} />
-                <Route path="/impact" element={<ProtectedRoute allowedRoles={['student']}><Impact /></ProtectedRoute>} />
                 <Route path="/student/feedback" element={<ProtectedRoute allowedRoles={['student']}><Feedback /></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute allowedRoles={['student']}><Settings /></ProtectedRoute>} />
                 <Route path="/student/menu" element={<ProtectedRoute allowedRoles={['student']}><StudentMenu /></ProtectedRoute>} />

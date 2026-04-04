@@ -2409,10 +2409,16 @@ app.get('/api/impact', optionalAuth, async (req, res) => {
         );
 
         const stats = result.rows[0] || {};
+        const mealsRescued = Number(stats.meals_rescued) || 0;
+        const foodSaved = Number(stats.food_saved) || 0;
+        const peopleFed = Math.max(0, Math.round(foodSaved * 2));
+        const co2Prevented = Math.max(0, Number((foodSaved * 2.5).toFixed(1)));
 
         res.json({
-            meals_rescued: Number(stats.meals_rescued) || 0,
-            food_saved: Number(stats.food_saved) || 0
+            meals_rescued: mealsRescued,
+            food_saved: foodSaved,
+            people_fed: peopleFed,
+            co2_prevented: co2Prevented
         });
     } catch (error) {
         console.error('Impact stats error:', error);

@@ -9,7 +9,6 @@ const studentLinks = [
     { path: '/meal-booking', label: 'Meal Booking', shortLabel: 'Book' },
     { path: '/scan-attendance', label: 'Scan Attendance', shortLabel: 'Scan' },
     { path: '/history', label: 'History', shortLabel: 'History' },
-    { path: '/impact', label: 'My Impact', shortLabel: 'Impact' },
     { path: '/settings', label: 'Profile', shortLabel: 'Profile' }
 ]
 
