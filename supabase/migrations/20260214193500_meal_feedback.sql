@@ -1,45 +1,32 @@
--- Create meal_feedback table
-CREATE TABLE IF NOT EXISTS public.meal_feedback (
+-- Legacy compatibility migration: converge historical meal_feedback installs to feedback.
+CREATE TABLE IF NOT EXISTS public.feedback (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE CASCADE,
-    user_role TEXT NOT NULL,
-    day TEXT NOT NULL CHECK (day IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')),
+    message TEXT NOT NULL CHECK (char_length(message) <= 300),
+    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
     meal_type TEXT NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner')),
-    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-    comment TEXT CHECK (char_length(comment) <= 300),
-    finalized_meal_id TEXT, -- The ID of the meal option from XML
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    -- Prevent duplicate feedback per user/meal/day
-    UNIQUE(user_id, day, meal_type)
+    is_anonymous BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- Enable RLS
-ALTER TABLE public.meal_feedback ENABLE ROW LEVEL SECURITY;
-
--- Students can insert feedback for themselves
-CREATE POLICY "Users can insert own feedback"
-ON public.meal_feedback FOR INSERT
-WITH CHECK (auth.uid() = user_id);
-
--- Students can update their own feedback (for the overwrite logic)
-CREATE POLICY "Users can update own feedback"
-ON public.meal_feedback FOR UPDATE
-USING (auth.uid() = user_id)
-WITH CHECK (auth.uid() = user_id);
-
--- Students can view their own feedback
-CREATE POLICY "Users can view own feedback"
-ON public.meal_feedback FOR SELECT
-USING (auth.uid() = user_id);
-
--- Admins/Managers can view all feedback
-CREATE POLICY "Admins can view all feedback"
-ON public.meal_feedback FOR SELECT
-USING (
-  EXISTS (
-    SELECT 1 FROM public.user_profiles
-    JOIN public.roles ON user_profiles.role_id = roles.id
-    WHERE user_profiles.id = auth.uid()
-    AND roles.name IN ('super_admin', 'hostel_admin', 'mess_manager')
-  )
+INSERT INTO public.feedback (id, message, rating, meal_type, created_at, is_anonymous)
+SELECT
+    mf.id,
+    COALESCE(NULLIF(BTRIM(mf.comment), ''), 'Legacy feedback migrated from meal_feedback'),
+    mf.rating,
+    mf.meal_type,
+    COALESCE(mf.created_at, NOW()),
+    TRUE
+FROM public.meal_feedback mf
+WHERE EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'meal_feedback'
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM public.feedback f
+    WHERE f.id = mf.id
 );
+
+CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON public.feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_meal_type ON public.feedback(meal_type);

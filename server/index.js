@@ -303,6 +303,31 @@ async function ensureAnonymousFeedbackTable() {
             is_anonymous BOOLEAN NOT NULL DEFAULT true
         )`
     );
+    await pool.query(`
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'meal_feedback'
+            ) THEN
+                INSERT INTO feedback (id, message, rating, meal_type, created_at, is_anonymous)
+                SELECT
+                    mf.id,
+                    COALESCE(NULLIF(BTRIM(mf.comment), ''), 'Legacy feedback migrated from meal_feedback'),
+                    mf.rating,
+                    mf.meal_type,
+                    COALESCE(mf.created_at, NOW()),
+                    TRUE
+                FROM meal_feedback mf
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM feedback f
+                    WHERE f.id = mf.id
+                );
+            END IF;
+        END $$;
+    `);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_feedback_meal_type ON feedback(meal_type)');
 }
