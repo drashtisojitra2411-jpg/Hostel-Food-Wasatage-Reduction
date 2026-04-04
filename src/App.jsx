@@ -20,6 +20,7 @@ const MenuManager = lazy(() => import('./pages/menu/MenuManager'))
 const Reports = lazy(() => import('./pages/mess-manager/Reports'))
 const Donations = lazy(() => import('./pages/mess-manager/Donations'))
 const AttendanceQR = lazy(() => import('./pages/mess-manager/AttendanceQR'))
+const AttendancePage = lazy(() => import('./pages/attendance/AttendancePage'))
 const ChefDashboard = lazy(() => import('./pages/chef/ChefDashboard'))
 const NGODashboard = lazy(() => import('./pages/ngo/NGODashboard'))
 
@@ -75,30 +76,32 @@ export default function App() {
                 <Route path="/attendance/scan" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
                 <Route path="/scan-attendance" element={<ProtectedRoute allowedRoles={['student']}><AttendanceScanner /></ProtectedRoute>} />
 
-                <Route path="/mess-manager" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><MessManagerDashboard /></ProtectedRoute>} />
+                <Route path="/mess-manager" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin', 'super_admin']}><MessManagerDashboard /></ProtectedRoute>} />
+                <Route path="/mess-manager/attendance" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin', 'super_admin']}><AttendancePage /></ProtectedRoute>} />
                 <Route path="/chef" element={<ProtectedRoute allowedRoles={['chef', 'super_admin']}><ChefDashboard /></ProtectedRoute>} />
                 <Route path="/ngo" element={<ProtectedRoute allowedRoles={['ngo', 'super_admin']}><NGODashboard /></ProtectedRoute>} />
 
                 <Route path="/mess-manager/inventory" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><InventoryManager /></ProtectedRoute>} />
                 <Route path="/mess-manager/wastage/log" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><WastageLog /></ProtectedRoute>} />
                 <Route path="/mess-manager/menu" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><MenuManager /></ProtectedRoute>} />
-                <Route path="/mess-manager/reports" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><Reports /></ProtectedRoute>} />
+                <Route path="/mess-manager/reports" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin', 'super_admin']}><Reports /></ProtectedRoute>} />
                 <Route path="/mess-manager/donations" element={<ProtectedRoute allowedRoles={['mess_manager', 'super_admin']}><Donations /></ProtectedRoute>} />
                 <Route path="/mess-manager/attendance-qr" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin']}><AttendanceQR /></ProtectedRoute>} />
                 <Route path="/generate-qr" element={<ProtectedRoute allowedRoles={['mess_manager', 'hostel_admin']}><AttendanceQR /></ProtectedRoute>} />
 
                 <Route path="/admin" element={<ProtectedRoute allowedRoles={['super_admin']}><Console /></ProtectedRoute>} />
+                <Route path="/admin/attendance" element={<ProtectedRoute allowedRoles={['super_admin', 'hostel_admin', 'mess_manager']}><AttendancePage /></ProtectedRoute>} />
                 <Route path="/admin/personnel" element={<ProtectedRoute allowedRoles={['super_admin']}><Personnel /></ProtectedRoute>} />
                 <Route path="/admin/entities" element={<ProtectedRoute allowedRoles={['super_admin']}><Entities /></ProtectedRoute>} />
                 <Route path="/admin/week-menu" element={<ProtectedRoute allowedRoles={['super_admin']}><WeekMenu /></ProtectedRoute>} />
                 <Route path="/admin/stock" element={<ProtectedRoute allowedRoles={['super_admin']}><Stock /></ProtectedRoute>} />
-                <Route path="/admin/metrics" element={<ProtectedRoute allowedRoles={['super_admin']}><Metrics /></ProtectedRoute>} />
+                <Route path="/admin/metrics" element={<ProtectedRoute allowedRoles={['super_admin', 'hostel_admin']}><Metrics /></ProtectedRoute>} />
                 <Route path="/admin/hatchery" element={<ProtectedRoute allowedRoles={['super_admin']}><Hatchery /></ProtectedRoute>} />
                 <Route path="/admin/system" element={<ProtectedRoute allowedRoles={['super_admin']}><System /></ProtectedRoute>} />
 
                 <Route path="/admin/users" element={<ProtectedRoute allowedRoles={['super_admin']}><Personnel /></ProtectedRoute>} />
                 <Route path="/admin/hostels" element={<ProtectedRoute allowedRoles={['super_admin']}><Entities /></ProtectedRoute>} />
-                <Route path="/admin/analytics" element={<ProtectedRoute allowedRoles={['super_admin']}><Metrics /></ProtectedRoute>} />
+                <Route path="/admin/analytics" element={<ProtectedRoute allowedRoles={['super_admin', 'hostel_admin']}><Metrics /></ProtectedRoute>} />
                 <Route path="/admin/inventory" element={<ProtectedRoute allowedRoles={['super_admin']}><Stock /></ProtectedRoute>} />
                 <Route path="/admin/donations" element={<ProtectedRoute allowedRoles={['super_admin']}><Hatchery /></ProtectedRoute>} />
                 <Route path="/admin/settings" element={<ProtectedRoute allowedRoles={['super_admin']}><System /></ProtectedRoute>} />

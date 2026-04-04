@@ -4,7 +4,7 @@ import { getDashboardPath } from '../../components/ProtectedRoute'
 import { useAuth } from '../../context/AuthContext'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
-import api, { API_URL } from '../../lib/api'
+import api from '../../lib/api'
 
 export default function Login() {
     const [email, setEmail] = useState('')
@@ -29,7 +29,8 @@ export default function Login() {
 
         setLoading(true)
         try {
-            console.log("LOGIN REQUEST:", API_URL + "/api/login");
+            console.log('API URL:', import.meta.env.VITE_API_URL)
+            console.log('LOGIN REQUEST:', `${import.meta.env.VITE_API_URL}/login`)
             const data = await api.post('/api/login', { email, password })
 
             if (!data?.token) {
@@ -40,17 +41,17 @@ export default function Login() {
             const nextPath = from || getDashboardPath(resolvedRole)
             navigate(nextPath, { replace: true })
         } catch (err) {
-            const rawMessage = String(err?.message || '')
-            const isNetworkError =
-                !navigator.onLine ||
-                rawMessage.toLowerCase().includes('failed to fetch') ||
-                rawMessage.toLowerCase().includes('network error')
-
-            setError(
-                isNetworkError
-                    ? 'Unable to reach server'
-                    : (err.message || 'Failed to sign in')
-            )
+            console.log(err)
+            if (err?.response) {
+                setError(
+                    err.response?.data?.message ||
+                    err.response?.data?.error ||
+                    err.message ||
+                    'Failed to sign in'
+                )
+            } else {
+                setError('Server not reachable')
+            }
         } finally {
             setLoading(false)
         }

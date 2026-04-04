@@ -14,6 +14,7 @@ const studentLinks = [
 
 const messManagerLinks = [
     { path: '/mess-manager', label: 'Dashboard', shortLabel: 'Home' },
+    { path: '/mess-manager/attendance', label: 'Attendance', shortLabel: 'Attendance' },
     { path: '/mess-manager/inventory', label: 'Inventory', shortLabel: 'Inventory' },
     { path: '/mess-manager/menu', label: 'Menu Manager', shortLabel: 'Menu' },
     { path: '/generate-qr', label: 'Generate QR', shortLabel: 'QR' },
@@ -23,8 +24,17 @@ const messManagerLinks = [
     { path: '/mess-manager/reports', label: 'Reports', shortLabel: 'Reports' }
 ]
 
+const hostelAdminLinks = [
+    { path: '/mess-manager', label: 'Dashboard', shortLabel: 'Home' },
+    { path: '/admin/attendance', label: 'Attendance', shortLabel: 'Attendance' },
+    { path: '/generate-qr', label: 'Generate QR', shortLabel: 'QR' },
+    { path: '/admin/metrics', label: 'Attendance Metrics', shortLabel: 'Metrics' },
+    { path: '/mess-manager/reports', label: 'Reports', shortLabel: 'Reports' }
+]
+
 const adminLinks = [
     { path: '/admin', label: 'Console', shortLabel: 'Console' },
+    { path: '/admin/attendance', label: 'Attendance', shortLabel: 'Attendance' },
     { path: '/admin/personnel', label: 'Personnel', shortLabel: 'Personnel' },
     { path: '/admin/entities', label: 'Entities', shortLabel: 'Entities' },
     { path: '/admin/week-menu', label: 'Week Menu', shortLabel: 'Week' },
@@ -64,7 +74,8 @@ export default function Navigation({ customLinks = null, activeItem = '', onItem
         if (isSuperAdmin()) return adminLinks
         if (isChef()) return chefLinks
         if (isNgo()) return ngoLinks
-        if (isMessManager() || isHostelAdmin()) return messManagerLinks
+        if (isHostelAdmin()) return hostelAdminLinks
+        if (isMessManager()) return messManagerLinks
         return studentLinks
     }, [customLinks, isSuperAdmin, isChef, isNgo, isMessManager, isHostelAdmin])
 

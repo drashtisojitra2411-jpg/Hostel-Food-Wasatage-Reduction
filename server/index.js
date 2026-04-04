@@ -24,20 +24,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 console.log("DATABASE_URL:", process.env.DATABASE_URL);
 const app = express();
-
-const allowedOrigins = [
-    'http://localhost:5174',
-    'https://zerobite-two.vercel.app', // main domain
-];
+const routes = express.Router();
+const corsOrigins = String(process.env.CORS_ORIGIN || 'http://localhost:5174')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 
 app.use(cors({
     origin: function (origin, callback) {
         if (!origin) return callback(null, true);
 
-        if (
-            allowedOrigins.includes(origin) ||
-            origin.endsWith('.vercel.app')
-        ) {
+        if (corsOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
             return callback(null, true);
         }
 
@@ -46,7 +43,7 @@ app.use(cors({
     credentials: true
 }));
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
 
 // ─── Database Connection ────────────────────────────────────────────────────
@@ -117,6 +114,29 @@ function normalizeMealType(mealType) {
 
 function normalizeRole(role) {
     return String(role || '').trim().toLowerCase();
+}
+
+function isAttendanceViewer(role) {
+    return ['super_admin', 'hostel_admin', 'mess_manager'].includes(normalizeRole(role));
+}
+
+function normalizeAttendanceStatus(status) {
+    const value = String(status || '').trim().toLowerCase();
+    if (value === 'present' || value === 'absent') {
+        return value;
+    }
+    return '';
+}
+
+function normalizeDateInput(value, fallback = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return fallback;
+    return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+}
+
+function toNumber(value, fallback = 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 // ─── IST Timezone Helpers ───────────────────────────────────────────────────
@@ -234,7 +254,30 @@ async function ensureAttendanceTables() {
             [mealName, timing.start, timing.end]
         );
     }
+    await pool.query('ALTER TABLE attendance ADD COLUMN IF NOT EXISTS attendance_date DATE');
+    await pool.query('ALTER TABLE attendance ADD COLUMN IF NOT EXISTS meal_type VARCHAR(20)');
+    await pool.query("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'present'");
+    await pool.query(
+        `UPDATE attendance a
+         SET attendance_date = COALESCE(a.attendance_date, m.date),
+             meal_type = COALESCE(a.meal_type, m.meal_type),
+             status = COALESCE(NULLIF(a.status, ''), 'present')
+         FROM meals m
+         WHERE a.meal_id = m.id
+           AND (a.attendance_date IS NULL OR a.meal_type IS NULL OR a.status IS NULL OR a.status = '')`
+    );
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_attendance_date_meal ON attendance(attendance_date, meal_type)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, attendance_date DESC)');
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_user_date_meal ON attendance(user_id, attendance_date, meal_type)');
     console.log('[MealTimings] Canonical timings synced');
+}
+
+async function ensureWastageConstraints() {
+    await pool.query("ALTER TABLE wastage_logs ADD COLUMN IF NOT EXISTS item_name VARCHAR(100)");
+    await pool.query("UPDATE wastage_logs SET item_name = COALESCE(NULLIF(item_name, ''), food_category, 'General') WHERE item_name IS NULL OR item_name = ''");
+    await pool.query("ALTER TABLE wastage_logs ALTER COLUMN item_name SET NOT NULL");
+    await pool.query("ALTER TABLE wastage_logs ALTER COLUMN quantity_wasted SET NOT NULL");
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_wastage_logs_date_meal_item ON wastage_logs(date, meal_type, item_name)');
 }
 
 // Test DB connection on startup
@@ -242,11 +285,16 @@ pool.query('SELECT NOW()')
     .then(async () => {
         await ensureMenuVotingTable();
         await ensureAttendanceTables();
+        await ensureWastageConstraints();
         console.log('✅ Database connected');
     })
     .catch(err => console.error('❌ Database connection failed:', err.message));
 
 app.use(express.json());
+app.use((req, res, next) => {
+    console.log('Incoming request:', req.method, req.url);
+    next();
+});
 
 app.get('/', (req, res) => {
     res.send('Backend is running');
@@ -483,6 +531,13 @@ async function loginHandler(req, res) {
 
 // POST /api/login
 app.post('/api/login', loginHandler);
+
+// GET /api/login - Manual route check
+app.get('/api/login', (req, res) => {
+    res.json({
+        message: 'Login endpoint is reachable. Use POST /api/login to authenticate.'
+    });
+});
 
 // Backward-compatible route
 app.post('/api/auth/login', loginHandler);
@@ -1086,10 +1141,10 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         let attendance;
         try {
             const insertRes = await client.query(
-                `INSERT INTO attendance (user_id, meal_id)
-                 VALUES ($1, $2)
+                `INSERT INTO attendance (user_id, meal_id, attendance_date, meal_type, status)
+                 VALUES ($1, $2, $3, $4, 'present')
                  RETURNING id, scanned_at`,
-                [req.user.id, meal.id]
+                [req.user.id, meal.id, meal.date, mealType]
             );
             attendance = insertRes.rows[0];
         } catch (error) {
@@ -1156,6 +1211,111 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         return res.status(500).json({ error: 'Unable to process attendance right now' });
     } finally {
         client.release();
+    }
+});
+
+// GET /api/attendance - Role-aware attendance access
+app.get('/api/attendance', authMiddleware, async (req, res) => {
+    try {
+        const userRole = normalizeRole(req.user?.role);
+        const queryDate = normalizeDateInput(req.query.date, getISTNow().dateString);
+        const mealType = normalizeMealType(req.query.meal_type);
+        const requestedStatus = normalizeAttendanceStatus(req.query.status);
+        const status = requestedStatus || 'present';
+
+        if (req.query.date && !queryDate) {
+            return res.status(400).json({ error: 'Invalid date. Expected YYYY-MM-DD' });
+        }
+
+        if (req.query.meal_type && !mealType) {
+            return res.status(400).json({ error: 'Invalid meal type. Use breakfast, lunch, or dinner' });
+        }
+
+        if (req.query.status && !requestedStatus) {
+            return res.status(400).json({ error: 'Invalid status. Use present or absent' });
+        }
+
+        const params = [];
+        const filters = [];
+        let index = 1;
+
+        if (queryDate) {
+            filters.push(`a.attendance_date = $${index++}`);
+            params.push(queryDate);
+        }
+
+        if (mealType) {
+            filters.push(`a.meal_type = $${index++}`);
+            params.push(mealType);
+        }
+
+        filters.push(`a.status = $${index++}`);
+        params.push(status);
+
+        if (!isAttendanceViewer(userRole)) {
+            filters.push(`a.user_id = $${index++}`);
+            params.push(req.user.id);
+        }
+
+        const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+        const attendanceRes = await pool.query(
+            `SELECT a.id, a.user_id AS student_id, up.full_name AS student_name, up.email,
+                    a.attendance_date AS date, a.meal_type, a.status, a.scanned_at
+             FROM attendance a
+             JOIN user_profiles up ON up.id = a.user_id
+             ${whereClause}
+             ORDER BY up.full_name ASC, a.scanned_at DESC`,
+            params
+        );
+
+        const rows = attendanceRes.rows.map((row) => ({
+            id: row.id,
+            student_id: row.student_id,
+            name: row.student_name || 'Student',
+            email: row.email || '',
+            date: row.date,
+            meal_type: row.meal_type,
+            status: row.status,
+            scanned_at: row.scanned_at
+        }));
+
+        if (!isAttendanceViewer(userRole)) {
+            return res.json({
+                total_present: rows.length,
+                records: rows
+            });
+        }
+
+        const analyticsParams = [queryDate];
+        let analyticsQuery = `
+            SELECT meal_type, COUNT(*)::int AS total_present
+            FROM attendance
+            WHERE status = 'present' AND attendance_date = $1
+        `;
+
+        if (mealType) {
+            analyticsQuery += ' AND meal_type = $2';
+            analyticsParams.push(mealType);
+        }
+
+        analyticsQuery += ' GROUP BY meal_type ORDER BY meal_type';
+
+        const analyticsRes = await pool.query(analyticsQuery, analyticsParams);
+
+        return res.json({
+            total_present: rows.length,
+            date: queryDate,
+            meal_type: mealType || null,
+            records: rows,
+            students: rows,
+            analytics: analyticsRes.rows.map((row) => ({
+                meal_type: row.meal_type,
+                total_present: Number(row.total_present) || 0
+            }))
+        });
+    } catch (error) {
+        console.error('Attendance listing error:', error);
+        return res.status(500).json({ error: 'Failed to fetch attendance' });
     }
 });
 
@@ -1435,6 +1595,31 @@ app.get('/api/menus', async (req, res) => {
     }
 });
 
+async function upsertWeekMenuEntry(client, { date, mealType, startTime, endTime, items, actorId }) {
+    const upsertMeal = await client.query(
+        "INSERT INTO meals (id, meal_type, date, start_time, end_time, booking_deadline, cancellation_deadline, is_active, created_by) " +
+        "VALUES (uuid_generate_v4(), $1, $2, $3, $4, ($2::date - INTERVAL '1 day') + $3::time, ($2::date - INTERVAL '1 day') + $3::time, true, $5) " +
+        "ON CONFLICT (meal_type, date) DO UPDATE SET start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time, updated_at = NOW() " +
+        "RETURNING id",
+        [mealType, date, startTime, endTime, actorId]
+    );
+    const mealId = upsertMeal.rows[0].id;
+
+    await client.query("DELETE FROM meal_menus WHERE meal_id = $1", [mealId]);
+    const parsedItems = Array.isArray(items)
+        ? items
+        : String(items || '').split(',').map((item) => item.trim()).filter(Boolean);
+
+    for (let i = 0; i < parsedItems.length; i += 1) {
+        await client.query(
+            "INSERT INTO meal_menus (id, meal_id, item_name, sort_order) VALUES (uuid_generate_v4(), $1, $2, $3)",
+            [mealId, parsedItems[i], i]
+        );
+    }
+
+    return mealId;
+}
+
 // GET /api/admin/week-menu?start_date=YYYY-MM-DD
 app.get('/api/admin/week-menu', authMiddleware, requireRole(['super_admin', 'mess_manager']), async (req, res) => {
     try {
@@ -1466,24 +1651,14 @@ app.put('/api/admin/week-menu', authMiddleware, requireRole(['super_admin', 'mes
         }
 
         await client.query('BEGIN');
-        const upsertMeal = await client.query(
-            "INSERT INTO meals (id, meal_type, date, start_time, end_time, booking_deadline, cancellation_deadline, is_active, created_by) " +
-            "VALUES (uuid_generate_v4(), $1, $2, $3, $4, ($2::date - INTERVAL '1 day') + $3::time, ($2::date - INTERVAL '1 day') + $3::time, true, $5) " +
-            "ON CONFLICT (meal_type, date) DO UPDATE SET start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time, updated_at = NOW() " +
-            "RETURNING id",
-            [meal_type, date, start_time, end_time, req.user.id]
-        );
-        const mealId = upsertMeal.rows[0].id;
-
-        await client.query("DELETE FROM meal_menus WHERE meal_id = $1", [mealId]);
-        const parsedItems = Array.isArray(items) ? items : String(items || '').split(',').map((x) => x.trim()).filter(Boolean);
-        for (let i = 0; i < parsedItems.length; i += 1) {
-            await client.query(
-                "INSERT INTO meal_menus (id, meal_id, item_name, sort_order) VALUES (uuid_generate_v4(), $1, $2, $3)",
-                [mealId, parsedItems[i], i]
-            );
-        }
-
+        const mealId = await upsertWeekMenuEntry(client, {
+            date,
+            mealType: meal_type,
+            startTime: start_time,
+            endTime: end_time,
+            items,
+            actorId: req.user.id
+        });
         await client.query('COMMIT');
         res.json({ message: 'Week menu updated', meal_id: mealId });
     } catch (error) {
@@ -1737,6 +1912,141 @@ app.post('/api/chef/waste-report', authMiddleware, async (req, res) => {
 });
 
 // GET /api/chef/inventory — Get inventory stock
+app.get('/api/wastage', authMiddleware, async (req, res) => {
+    try {
+        const queryDate = normalizeDateInput(req.query.date, getISTNow().dateString);
+        const mealType = normalizeMealType(req.query.meal_type);
+        const params = [];
+        const filters = [];
+        let index = 1;
+
+        if (req.query.date && !queryDate) {
+            return res.status(400).json({ error: 'Invalid date. Expected YYYY-MM-DD' });
+        }
+
+        if (req.query.meal_type && !mealType) {
+            return res.status(400).json({ error: 'Invalid meal type. Use breakfast, lunch, or dinner' });
+        }
+
+        if (queryDate) {
+            filters.push(`date = $${index++}`);
+            params.push(queryDate);
+        }
+
+        if (mealType) {
+            filters.push(`meal_type = $${index++}`);
+            params.push(mealType);
+        }
+
+        const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+        const [logsRes, totalsRes] = await Promise.all([
+            pool.query(
+                `SELECT id, date, meal_type, item_name AS food_item, quantity_wasted AS quantity, notes, created_at
+                 FROM wastage_logs
+                 ${whereClause}
+                 ORDER BY date DESC, meal_type ASC, item_name ASC`,
+                params
+            ),
+            pool.query(
+                `SELECT meal_type, ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS total_wastage
+                 FROM wastage_logs
+                 ${whereClause}
+                 GROUP BY meal_type
+                 ORDER BY meal_type`,
+                params
+            )
+        ]);
+
+        res.json({
+            date: queryDate || null,
+            meal_type: mealType || null,
+            logs: logsRes.rows.map((row) => ({
+                ...row,
+                quantity: toNumber(row.quantity, 0)
+            })),
+            totals_by_meal: totalsRes.rows.map((row) => ({
+                meal_type: row.meal_type,
+                total_wastage: toNumber(row.total_wastage, 0)
+            })),
+            total_wastage: totalsRes.rows.reduce((sum, row) => sum + toNumber(row.total_wastage, 0), 0)
+        });
+    } catch (error) {
+        console.error('Wastage fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch wastage logs' });
+    }
+});
+
+app.post('/api/wastage', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
+    try {
+        const date = normalizeDateInput(req.body?.date, '');
+        const mealType = normalizeMealType(req.body?.meal_type);
+        const foodItem = String(req.body?.food_item || '').trim();
+        const quantityWasted = toNumber(req.body?.quantity_wasted, NaN);
+
+        if (!date || !mealType || !foodItem) {
+            return res.status(400).json({ error: 'date, meal_type, and food_item are required' });
+        }
+
+        if (!Number.isFinite(quantityWasted) || quantityWasted < 0) {
+            return res.status(400).json({ error: 'quantity_wasted must be a non-negative number' });
+        }
+
+        const mealRes = await pool.query(
+            `SELECT id
+             FROM meals
+             WHERE date = $1 AND meal_type = $2
+             ORDER BY start_time ASC
+             LIMIT 1`,
+            [date, mealType]
+        );
+
+        const result = await pool.query(
+            `INSERT INTO wastage_logs (meal_id, date, meal_type, item_name, quantity_wasted, logged_by, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (date, meal_type, item_name)
+             DO UPDATE SET
+                quantity_wasted = EXCLUDED.quantity_wasted,
+                meal_id = COALESCE(EXCLUDED.meal_id, wastage_logs.meal_id),
+                logged_by = EXCLUDED.logged_by,
+                notes = EXCLUDED.notes
+             RETURNING id, date, meal_type, item_name AS food_item, quantity_wasted AS quantity`,
+            [
+                mealRes.rows[0]?.id || null,
+                date,
+                mealType,
+                foodItem,
+                quantityWasted,
+                req.user.id,
+                `Updated by ${req.user.email || 'manager'}`
+            ]
+        );
+
+        const totalsRes = await pool.query(
+            `SELECT meal_type, ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS total_wastage
+             FROM wastage_logs
+             WHERE date = $1
+             GROUP BY meal_type
+             ORDER BY meal_type`,
+            [date]
+        );
+
+        res.json({
+            message: 'Wastage updated successfully',
+            entry: {
+                ...result.rows[0],
+                quantity: toNumber(result.rows[0]?.quantity, 0)
+            },
+            totals_by_meal: totalsRes.rows.map((row) => ({
+                meal_type: row.meal_type,
+                total_wastage: toNumber(row.total_wastage, 0)
+            }))
+        });
+    } catch (error) {
+        console.error('Wastage upsert error:', error);
+        res.status(500).json({ error: 'Failed to update wastage log' });
+    }
+});
+
 app.get('/api/chef/inventory', optionalAuth, async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM inventory ORDER BY status, item_name ASC');
@@ -2177,9 +2487,10 @@ app.get('/api/ngo/impact', optionalAuth, async (req, res) => {
 });
 
 // GET /api/analytics/overview - Aggregated metrics/charts for admin and reports
-app.get('/api/analytics/overview', authMiddleware, requireRole(['super_admin', 'mess_manager', 'chef']), async (req, res) => {
+app.get('/api/analytics/overview', authMiddleware, requireRole(['super_admin', 'hostel_admin', 'mess_manager', 'chef']), async (req, res) => {
     try {
-        const [metrics, monthlyWasteRes, servedVsWastedRes, wasteByHostelRes, ngoPickupRes, recentActivitiesRes, activeAlertsRes] = await Promise.all([
+        const today = getISTNow().dateString;
+        const [metrics, monthlyWasteRes, servedVsWastedRes, wasteByHostelRes, ngoPickupRes, recentActivitiesRes, activeAlertsRes, attendanceOverviewRes] = await Promise.all([
             fetchOverviewMetrics(),
             pool.query(
                 "SELECT TO_CHAR(ms.month_start, 'Mon') AS month, " +
@@ -2214,6 +2525,13 @@ app.get('/api/analytics/overview', authMiddleware, requireRole(['super_admin', '
             pool.query(
                 "SELECT item_name, quantity, reorder_level FROM inventory " +
                 "WHERE is_active = true AND quantity <= reorder_level ORDER BY quantity ASC LIMIT 6"
+            ),
+            pool.query(
+                "SELECT meal_type, COUNT(*)::int AS total_present " +
+                "FROM attendance " +
+                "WHERE status = 'present' AND attendance_date = $1 " +
+                "GROUP BY meal_type ORDER BY meal_type",
+                [today]
             )
         ]);
 
@@ -2226,6 +2544,11 @@ app.get('/api/analytics/overview', authMiddleware, requireRole(['super_admin', '
             served_vs_wasted: servedVsWastedRes.rows,
             waste_by_hostel: wasteByHostelRes.rows,
             ngo_pickup_frequency: ngoPickupRes.rows,
+            attendance_overview: attendanceOverviewRes.rows.map((row) => ({
+                meal_type: row.meal_type,
+                total_present: Number(row.total_present) || 0
+            })),
+            attendance_date: today,
             activities,
             alerts
         });
@@ -2268,9 +2591,10 @@ app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), asyn
 });
 
 // GET /api/mess-manager/dashboard - Mess manager summary
-app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manager', 'super_admin']), async (req, res) => {
+app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
-        const [bookingsRes, expectedRes, lowStockRes, wastageRes, alertsRes] = await Promise.all([
+        const today = getISTNow().dateString;
+        const [bookingsRes, expectedRes, lowStockRes, wastageRes, alertsRes, attendanceRes, attendanceByMealRes] = await Promise.all([
             pool.query("SELECT COUNT(*)::int AS total_bookings FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status = 'confirmed'"),
             pool.query("SELECT COUNT(*)::int AS expected_attendance FROM meal_bookings WHERE booking_date = CURRENT_DATE"),
             pool.query("SELECT COUNT(*)::int AS low_stock_items FROM inventory WHERE is_active = true AND quantity <= reorder_level"),
@@ -2278,6 +2602,22 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
             pool.query(
                 "SELECT id, item_name, quantity, reorder_level FROM inventory " +
                 "WHERE is_active = true AND quantity <= reorder_level ORDER BY quantity ASC LIMIT 5"
+            ),
+            pool.query(
+                `SELECT a.user_id AS student_id, up.full_name AS name, a.meal_type, a.scanned_at
+                 FROM attendance a
+                 JOIN user_profiles up ON up.id = a.user_id
+                 WHERE a.attendance_date = $1 AND a.status = 'present'
+                 ORDER BY a.scanned_at DESC, up.full_name ASC`,
+                [today]
+            ),
+            pool.query(
+                `SELECT meal_type, COUNT(*)::int AS total_present
+                 FROM attendance
+                 WHERE attendance_date = $1 AND status = 'present'
+                 GROUP BY meal_type
+                 ORDER BY meal_type`,
+                [today]
             )
         ]);
 
@@ -2287,6 +2627,15 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
                 expected_attendance: expectedRes.rows[0]?.expected_attendance || 0,
                 low_stock_items: lowStockRes.rows[0]?.low_stock_items || 0,
                 today_wastage: wastageRes.rows[0]?.today_wastage || 0
+            },
+            attendance: {
+                date: today,
+                total_present: attendanceRes.rows.length,
+                students: attendanceRes.rows,
+                totals_by_meal: attendanceByMealRes.rows.map((row) => ({
+                    meal_type: row.meal_type,
+                    total_present: Number(row.total_present) || 0
+                }))
             },
             alerts: alertsRes.rows.map((r) => ({
                 id: r.id,
@@ -2305,6 +2654,78 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
 // ═══════════════════════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════════════════════
+
+routes.get('/menu', async (req, res) => {
+    try {
+        const queryDate = normalizeDateInput(req.query.date, '');
+
+        if (queryDate) {
+            const result = await pool.query(
+                "SELECT m.id, m.date, m.meal_type, m.start_time, m.end_time, " +
+                "COALESCE(STRING_AGG(mm.item_name, ', ' ORDER BY mm.sort_order), '') AS items " +
+                "FROM meals m " +
+                "LEFT JOIN meal_menus mm ON mm.meal_id = m.id " +
+                "WHERE m.date = $1 " +
+                "GROUP BY m.id " +
+                "ORDER BY m.start_time",
+                [queryDate]
+            );
+            return res.json(result.rows);
+        }
+
+        const weekStart = req.query.week_start || getWeekStartISO();
+        const votes = await loadVotesForWeek(weekStart);
+        const { finalMenu } = buildFinalMenuFromVotes(votes);
+
+        return res.json({
+            week_start: weekStart,
+            menus: MENU_DAYS.map((day) => ({
+                day,
+                meals: finalMenu[day] || DEFAULT_MENU_OPTIONS[day] || {}
+            }))
+        });
+    } catch (error) {
+        console.error('Menu fetch error:', error);
+        return res.status(500).json({ error: 'Failed to fetch menu' });
+    }
+});
+
+routes.post('/menu', authMiddleware, requireRole(['super_admin', 'mess_manager', 'hostel_admin']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const date = normalizeDateInput(req.body?.date, '');
+        const mealType = normalizeMealType(req.body?.meal_type);
+        const timing = getMealTimingForType(mealType);
+        const startTime = String(req.body?.start_time || timing?.start || '').trim();
+        const endTime = String(req.body?.end_time || timing?.end || '').trim();
+        const items = req.body?.items || [];
+
+        if (!date || !mealType || !startTime || !endTime) {
+            return res.status(400).json({ error: 'date, meal_type, start_time and end_time are required' });
+        }
+
+        await client.query('BEGIN');
+        const mealId = await upsertWeekMenuEntry(client, {
+            date,
+            mealType,
+            startTime,
+            endTime,
+            items,
+            actorId: req.user.id
+        });
+        await client.query('COMMIT');
+
+        return res.status(201).json({ message: 'Menu saved successfully', meal_id: mealId });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Menu save error:', error);
+        return res.status(500).json({ error: 'Failed to save menu' });
+    } finally {
+        client.release();
+    }
+});
+
+app.use('/api', routes);
 
 app.use((err, req, res, next) => {
     if (err && err.message === 'CORS origin not allowed') {

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-export const API_URL = "https://hfwr-server.onrender.com";
-console.log("API URL:", API_URL);
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+console.log('API URL:', API_URL);
 
 const apiClient = axios.create({
     baseURL: API_URL,
@@ -74,25 +74,26 @@ apiClient.interceptors.response.use(
         const normalized = new Error(message);
         normalized.status = status;
         normalized.original = error;
+        normalized.response = error.response;
         return Promise.reject(normalized);
     }
 );
 
 const api = {
     get: async (path, config = {}) => {
-        const response = await apiClient.get(path, config);
+        const response = await apiClient.get(normalizePath(path), config);
         return response.data;
     },
     post: async (path, body = {}, config = {}) => {
-        const response = await apiClient.post(path, body, config);
+        const response = await apiClient.post(normalizePath(path), body, config);
         return response.data;
     },
     put: async (path, body = {}, config = {}) => {
-        const response = await apiClient.put(path, body, config);
+        const response = await apiClient.put(normalizePath(path), body, config);
         return response.data;
     },
     delete: async (path, body = null, config = {}) => {
-        const response = await apiClient.delete(path, { ...config, data: body });
+        const response = await apiClient.delete(normalizePath(path), { ...config, data: body });
         return response.data;
     },
     getToken,
@@ -102,3 +103,17 @@ const api = {
 };
 
 export default api;
+
+function normalizePath(path = '') {
+    const value = String(path || '').trim();
+    if (!value) {
+        return '/';
+    }
+    const normalized = value.startsWith('/') ? value : `/${value}`;
+
+    if (normalized === '/api') {
+        return '/';
+    }
+
+    return normalized.startsWith('/api/') ? normalized.slice(4) : normalized;
+}
