@@ -29,9 +29,7 @@ export default function Login() {
 
         setLoading(true)
         try {
-            console.log('API URL:', import.meta.env.VITE_API_URL)
-            console.log('LOGIN REQUEST:', `${import.meta.env.VITE_API_URL}/login`)
-            const data = await api.post('/api/login', { email, password })
+            const data = await api.post('/login', { email, password })
 
             if (!data?.token) {
                 throw new Error('Login failed: missing token in response')

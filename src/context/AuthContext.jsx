@@ -83,7 +83,7 @@ export function AuthProvider({ children }) {
     }
 
     async function signIn({ email, password }) {
-        const data = await api.post('/api/login', {
+        const data = await api.post('/login', {
             email,
             password
         })

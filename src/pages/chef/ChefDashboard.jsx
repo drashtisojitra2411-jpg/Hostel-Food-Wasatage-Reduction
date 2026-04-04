@@ -3,7 +3,7 @@ import WastageBarChart from '../../components/analytics/WastageBarChart';
 import WastagePieChart from '../../components/analytics/WastagePieChart';
 import WastageTrendChart from '../../components/analytics/WastageTrendChart';
 import Navigation from '../../components/layout/Navigation';
-import api from '../../lib/api';
+import api, { API_URL } from '../../lib/api';
 
 const TARGET_STOCK_ITEMS = ['Rice', 'Vegetables', 'Milk', 'Flour'];
 const CHEF_SECTION_LINKS = [
@@ -145,21 +145,41 @@ export default function ChefDashboard() {
     async function fetchDashboardData() {
         setLoading(true);
         setError('');
-        const [menuRes, invRes, predRes, analyticsRes, feedbackRes] = await Promise.allSettled([
-            api.get('/api/chef/menu'),
-            api.get('/api/chef/inventory'),
-            api.get('/api/chef/prediction'),
-            api.get('/api/chef/analytics'),
-            api.get('/api/chef/feedback?limit=8')
-        ]);
+        const endpoints = [
+            { key: 'menu', label: 'menu', path: '/api/chef/menu' },
+            { key: 'inventory', label: 'kitchen inventory', path: '/api/chef/inventory' },
+            { key: 'prediction', label: 'production predictions', path: '/api/chef/prediction' },
+            { key: 'analytics', label: 'production analytics', path: '/api/chef/analytics' },
+            { key: 'feedback', label: 'feedback', path: '/api/chef/feedback?limit=8' }
+        ];
+
+        const results = await Promise.allSettled(
+            endpoints.map(({ path }) => {
+                console.log('Calling:', `${API_URL}${path.replace('/api', '')}`);
+                return api.get(path);
+            })
+        );
+
+        const [menuRes, invRes, predRes, analyticsRes, feedbackRes] = results;
+        const errorMessages = [];
+
         if (menuRes.status === 'fulfilled') setMenu(Array.isArray(menuRes.value) ? menuRes.value : []);
-        else { setMenu([]); setError('Failed to fetch data'); }
+        else {
+            setMenu([]);
+            errorMessages.push(`Menu: ${menuRes.reason?.message || 'request failed'}`);
+        }
 
         if (invRes.status === 'fulfilled') setInventory(normalizeInventory(invRes.value));
-        else { setInventory(normalizeInventory([])); setError('Failed to fetch data'); }
+        else {
+            setInventory(normalizeInventory([]));
+            errorMessages.push(`Kitchen inventory: ${invRes.reason?.message || 'request failed'}`);
+        }
 
         if (predRes.status === 'fulfilled') setPredictions(normalizePredictions(predRes.value?.ai_prediction));
-        else { setPredictions(normalizePredictions([])); setError('Failed to fetch data'); }
+        else {
+            setPredictions(normalizePredictions([]));
+            errorMessages.push(`Production predictions: ${predRes.reason?.message || 'request failed'}`);
+        }
 
         if (analyticsRes.status === 'fulfilled') {
             setAnalytics({
@@ -170,7 +190,7 @@ export default function ChefDashboard() {
             });
         } else {
             setAnalytics({ weekly_waste: [], waste_by_meal: [], waste_trend: [], efficiency: normalizeEfficiency({}) });
-            setError('Failed to fetch data');
+            errorMessages.push(`Production analytics: ${analyticsRes.reason?.message || 'request failed'}`);
         }
 
         if (feedbackRes.status === 'fulfilled') {
@@ -185,8 +205,9 @@ export default function ChefDashboard() {
             setFeedback([]);
             setFeedbackSummary({ avg_rating: 0, total_feedback: 0 });
             setInsights({ last_7_days_count: 0 });
-            setError('Failed to fetch data');
+            errorMessages.push(`Feedback: ${feedbackRes.reason?.message || 'request failed'}`);
         }
+        setError(errorMessages.join(' | '));
         setLoading(false);
     }
 

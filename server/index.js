@@ -25,7 +25,11 @@ const __dirname = dirname(__filename);
 console.log("DATABASE_URL:", process.env.DATABASE_URL);
 const app = express();
 const routes = express.Router();
-const corsOrigins = String(process.env.CORS_ORIGIN || 'http://localhost:5174')
+const defaultCorsOrigins = [
+    'http://localhost:5174',
+    'https://your-vercel-app.vercel.app'
+];
+const corsOrigins = String(process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
@@ -38,7 +42,7 @@ app.use(cors({
             return callback(null, true);
         }
 
-        return callback(new Error('CORS not allowed'));
+        return callback(new Error('CORS origin not allowed'));
     },
     credentials: true
 }));
@@ -137,6 +141,14 @@ function normalizeDateInput(value, fallback = '') {
 function toNumber(value, fallback = 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function isPgMissingObjectError(error) {
+    return error?.code === '42P01' || error?.code === '42703';
+}
+
+function isPgOptionalDataError(error) {
+    return isPgMissingObjectError(error);
 }
 
 // ─── IST Timezone Helpers ───────────────────────────────────────────────────
@@ -298,6 +310,10 @@ app.use((req, res, next) => {
 
 app.get('/', (req, res) => {
     res.send('Backend is running');
+});
+
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true });
 });
 
 // Auth middleware — extracts user from JWT
@@ -1817,6 +1833,7 @@ app.get('/api/feedback', optionalAuth, async (req, res) => {
 
 // GET /api/chef/menu — Get today's menu and pre-booked count
 app.get('/api/chef/menu', optionalAuth, async (req, res) => {
+    console.log('Route hit:', req.url);
     try {
         const result = await pool.query(
             `SELECT m.*, 
@@ -1828,12 +1845,16 @@ app.get('/api/chef/menu', optionalAuth, async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         console.error('Chef menu error:', error);
-        res.status(500).json({ error: 'Failed to fetch chef menu' });
+        if (isPgOptionalDataError(error)) {
+            return res.json([]);
+        }
+        res.status(500).json({ error: error.message || 'Failed to fetch chef menu' });
     }
 });
 
 // GET /api/chef/prediction — AI Waste Predictor
 app.get('/api/chef/prediction', optionalAuth, async (req, res) => {
+    console.log('Route hit:', req.url);
     try {
         const date = new Date().toISOString().split('T')[0];
 
@@ -1887,7 +1908,10 @@ app.get('/api/chef/prediction', optionalAuth, async (req, res) => {
         res.json({ success: true, ai_prediction: predictions, date });
     } catch (error) {
         console.error('Chef prediction error:', error);
-        res.status(500).json({ error: 'Failed to generate AI prediction' });
+        if (isPgOptionalDataError(error)) {
+            return res.json({ success: true, ai_prediction: [], date: new Date().toISOString().split('T')[0] });
+        }
+        res.status(500).json({ error: error.message || 'Failed to generate AI prediction' });
     }
 });
 
@@ -2048,11 +2072,16 @@ app.post('/api/wastage', authMiddleware, requireRole(['mess_manager', 'hostel_ad
 });
 
 app.get('/api/chef/inventory', optionalAuth, async (req, res) => {
+    console.log('Route hit:', req.url);
     try {
         const result = await pool.query('SELECT * FROM inventory ORDER BY status, item_name ASC');
         res.json(result.rows);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch inventory' });
+        console.error('Chef inventory error:', error);
+        if (isPgOptionalDataError(error)) {
+            return res.json([]);
+        }
+        res.status(500).json({ error: error.message || 'Failed to fetch inventory' });
     }
 });
 
@@ -2161,6 +2190,7 @@ app.delete('/api/inventory/:id', authMiddleware, requireRole(['super_admin', 'me
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/chef/analytics - Waste charts + efficiency metrics
 app.get('/api/chef/analytics', optionalAuth, async (req, res) => {
+    console.log('Route hit:', req.url);
     try {
         const [weeklyRes, byMealRes, trendRes, totalsRes] = await Promise.all([
             pool.query(
@@ -2214,12 +2244,27 @@ app.get('/api/chef/analytics', optionalAuth, async (req, res) => {
         });
     } catch (error) {
         console.error('Chef analytics error:', error);
-        res.status(500).json({ error: 'Failed to fetch chef analytics' });
+        if (isPgOptionalDataError(error)) {
+            return res.json({
+                weekly_waste: [],
+                waste_by_meal: [],
+                waste_trend: [],
+                efficiency: {
+                    total_prepared_kg: 0,
+                    total_consumed_kg: 0,
+                    total_wasted_kg: 0,
+                    utilization_rate: 0,
+                    waste_rate: 0
+                }
+            });
+        }
+        res.status(500).json({ error: error.message || 'Failed to fetch chef analytics' });
     }
 });
 
 // GET /api/chef/feedback - Recent student meal feedback for kitchen review
 app.get('/api/chef/feedback', optionalAuth, async (req, res) => {
+    console.log('Route hit:', req.url);
     try {
         const limit = Math.min(parseInt(req.query.limit || '8', 10), 30);
 
@@ -2247,7 +2292,13 @@ app.get('/api/chef/feedback', optionalAuth, async (req, res) => {
         });
     } catch (error) {
         console.error('Chef feedback error:', error);
-        res.status(500).json({ error: 'Failed to fetch chef feedback' });
+        if (isPgOptionalDataError(error)) {
+            return res.json({
+                feedback: [],
+                summary: { total_feedback: 0, avg_rating: 0 }
+            });
+        }
+        res.status(500).json({ error: error.message || 'Failed to fetch chef feedback' });
     }
 });
 // NGO ROUTES
