@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import Card from './Card';
 import Button from './Button';
 import Notification from './Notification';
-import { saveFeedback } from '../../utils/feedback';
+import { FEEDBACK_MAX_LENGTH, submitAnonymousFeedback } from '../../utils/feedback';
 
 export default function FeedbackModal({ isOpen, onClose, user, profile, day, mealType, mealName, mealId }) {
     const [rating, setRating] = useState(0);
@@ -19,18 +19,14 @@ export default function FeedbackModal({ isOpen, onClose, user, profile, day, mea
         }
 
         setIsSubmitting(true);
-        const result = await saveFeedback({
-            user_id: user.id,
-            user_role: profile?.roles?.name || 'student',
-            day,
-            meal_type: mealType,
+        const result = await submitAnonymousFeedback({
+            message: comment,
             rating,
-            comment,
-            finalized_meal_id: mealId
+            meal_type: mealType,
         });
 
         if (result.success) {
-            setNotification({ show: true, message: 'FEEDBACK SUBMITTED SUCCESSFULLY', type: 'success' });
+            setNotification({ show: true, message: 'FEEDBACK SUBMITTED ANONYMOUSLY', type: 'success' });
             setTimeout(() => {
                 onClose();
                 // Reset state after closing
@@ -98,12 +94,12 @@ export default function FeedbackModal({ isOpen, onClose, user, profile, day, mea
                         <div className="flex justify-between items-center mb-4">
                             <label className="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 block">Observations (Optional)</label>
                             <span className={`text-[8px] font-black ${comment.length >= 300 ? 'text-red-500' : 'text-white/20'}`}>
-                                {comment.length} / 300
+                                {comment.length} / {FEEDBACK_MAX_LENGTH}
                             </span>
                         </div>
                         <textarea
                             value={comment}
-                            onChange={(e) => setComment(e.target.value.slice(0, 300))}
+                            onChange={(e) => setComment(e.target.value.slice(0, FEEDBACK_MAX_LENGTH))}
                             className="w-full h-32 bg-white/5 border border-white/10 rounded-2xl p-6 text-sm text-white/80 focus:border-creative-lime/50 focus:outline-none transition-all resize-none"
                             placeholder="TRANSMIT YOUR NUTRITIONAL FEEDBACK..."
                         />

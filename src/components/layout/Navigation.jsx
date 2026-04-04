@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext'
 const studentLinks = [
     { path: '/dashboard', label: 'Dashboard', shortLabel: 'Home' },
     { path: '/student/menu', label: 'Menu', shortLabel: 'Menu' },
+    { path: '/student/feedback', label: 'Feedback', shortLabel: 'Feedback' },
     { path: '/meal-booking', label: 'Meal Booking', shortLabel: 'Book' },
     { path: '/scan-attendance', label: 'Scan Attendance', shortLabel: 'Scan' },
     { path: '/history', label: 'History', shortLabel: 'History' },
@@ -14,6 +15,7 @@ const studentLinks = [
 
 const messManagerLinks = [
     { path: '/mess-manager', label: 'Dashboard', shortLabel: 'Home' },
+    { path: '/admin/feedback', label: 'Feedback', shortLabel: 'Feedback' },
     { path: '/mess-manager/attendance', label: 'Attendance', shortLabel: 'Attendance' },
     { path: '/mess-manager/inventory', label: 'Inventory', shortLabel: 'Inventory' },
     { path: '/mess-manager/menu', label: 'Menu Manager', shortLabel: 'Menu' },
@@ -26,6 +28,7 @@ const messManagerLinks = [
 
 const hostelAdminLinks = [
     { path: '/mess-manager', label: 'Dashboard', shortLabel: 'Home' },
+    { path: '/admin/feedback', label: 'Feedback', shortLabel: 'Feedback' },
     { path: '/admin/attendance', label: 'Attendance', shortLabel: 'Attendance' },
     { path: '/generate-qr', label: 'Generate QR', shortLabel: 'QR' },
     { path: '/admin/metrics', label: 'Attendance Metrics', shortLabel: 'Metrics' },
@@ -34,6 +37,7 @@ const hostelAdminLinks = [
 
 const adminLinks = [
     { path: '/admin', label: 'Console', shortLabel: 'Console' },
+    { path: '/admin/feedback', label: 'Feedback', shortLabel: 'Feedback' },
     { path: '/admin/attendance', label: 'Attendance', shortLabel: 'Attendance' },
     { path: '/admin/personnel', label: 'Personnel', shortLabel: 'Personnel' },
     { path: '/admin/entities', label: 'Entities', shortLabel: 'Entities' },
@@ -45,7 +49,8 @@ const adminLinks = [
 ]
 
 const chefLinks = [
-    { path: '/chef', label: 'Kitchen Dashboard', shortLabel: 'Kitchen' }
+    { path: '/chef', label: 'Kitchen Dashboard', shortLabel: 'Kitchen' },
+    { path: '/admin/feedback', label: 'Feedback Archive', shortLabel: 'Feedback' }
 ]
 
 const ngoLinks = [
@@ -54,7 +59,7 @@ const ngoLinks = [
 
 const studentBottomLinks = [
     { path: '/student/menu', label: 'Menu' },
-    { path: '/scan-attendance', label: 'Scan' },
+    { path: '/student/feedback', label: 'Feedback' },
     { path: '/settings', label: 'Profile' }
 ]
 

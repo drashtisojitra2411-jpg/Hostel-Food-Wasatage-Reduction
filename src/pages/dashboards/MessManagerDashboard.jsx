@@ -144,6 +144,7 @@ export default function MessManagerDashboard() {
     }
 
     const quickActions = [
+        { icon: 'FB', label: 'FEEDBACK', path: '/admin/feedback' },
         { icon: 'LOG', label: 'WASTAGE LOG', path: '/mess-manager/wastage/log' },
         { icon: 'INV', label: 'INVENTORY', path: '/mess-manager/inventory' },
         { icon: 'QR', label: 'ATTENDANCE QR', path: '/generate-qr' },

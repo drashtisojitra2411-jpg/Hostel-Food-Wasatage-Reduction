@@ -292,11 +292,27 @@ async function ensureWastageConstraints() {
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_wastage_logs_date_meal_item ON wastage_logs(date, meal_type, item_name)');
 }
 
+async function ensureAnonymousFeedbackTable() {
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS feedback (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            message TEXT NOT NULL,
+            rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+            meal_type VARCHAR(20) NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_anonymous BOOLEAN NOT NULL DEFAULT true
+        )`
+    );
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_feedback_meal_type ON feedback(meal_type)');
+}
+
 // Test DB connection on startup
 pool.query('SELECT NOW()')
     .then(async () => {
         await ensureMenuVotingTable();
         await ensureAttendanceTables();
+        await ensureAnonymousFeedbackTable();
         await ensureWastageConstraints();
         console.log('✅ Database connected');
     })
@@ -1758,20 +1774,25 @@ app.delete('/api/meal-bookings', authMiddleware, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // POST /api/feedback — save or update feedback (upsert)
-app.post('/api/feedback', authMiddleware, async (req, res) => {
+app.post('/api/feedback', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
-        const { user_id, user_role, day, meal_type, rating, comment, finalized_meal_id } = req.body;
+        const message = String(req.body?.message || '').trim();
+        const meal_type = normalizeMealType(req.body?.meal_type);
+        const hasRating = req.body?.rating !== undefined && req.body?.rating !== null && String(req.body?.rating).trim() !== '';
+        const rating = hasRating ? parseInt(req.body.rating, 10) : null;
 
-        if (!rating) return res.status(400).json({ error: 'Rating is mandatory' });
-        if (comment && comment.length > 300) return res.status(400).json({ error: 'Comment exceeds 300 characters' });
+        if (!message) return res.status(400).json({ error: 'Feedback message is required' });
+        if (message.length > 300) return res.status(400).json({ error: 'Feedback message exceeds 300 characters' });
+        if (!meal_type) return res.status(400).json({ error: 'Valid meal type is required' });
+        if (hasRating && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+            return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+        }
 
         const result = await pool.query(
-            `INSERT INTO meal_feedback (user_id, user_role, day, meal_type, rating, comment, finalized_meal_id, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-             ON CONFLICT (user_id, day, meal_type)
-             DO UPDATE SET rating = $5, comment = $6, finalized_meal_id = $7, created_at = NOW()
-             RETURNING *`,
-            [user_id || req.user.id, user_role || 'student', day, meal_type, rating, comment || null, finalized_meal_id || null]
+            `INSERT INTO feedback (message, rating, meal_type, created_at, is_anonymous)
+             VALUES ($1, $2, $3, NOW(), TRUE)
+             RETURNING id, message, rating, meal_type, created_at, is_anonymous`,
+            [message, rating, meal_type]
         );
 
         res.json({ success: true, data: result.rows[0] });
@@ -1782,45 +1803,40 @@ app.post('/api/feedback', authMiddleware, async (req, res) => {
 });
 
 // GET /api/feedback — fetch feedback with filters
-app.get('/api/feedback', optionalAuth, async (req, res) => {
+app.get('/api/feedback', authMiddleware, requireRole(['mess_manager', 'chef', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
-        const { day, meal_type, rating, limit = 50, offset = 0 } = req.query;
+        const meal_type = normalizeMealType(req.query.meal_type);
+        const date = normalizeDateInput(req.query.date);
+        const rating = req.query.rating ? parseInt(req.query.rating, 10) : null;
+        const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10), 1), 200);
+        const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
 
         let query = `
-            SELECT mf.*,
-                   up.full_name as "user_full_name",
-                   up.hostel_id as "user_hostel_id"
-            FROM meal_feedback mf
-            LEFT JOIN user_profiles up ON mf.user_id = up.id
+            SELECT id, message, rating, meal_type, created_at, is_anonymous
+            FROM feedback
             WHERE 1=1
         `;
         const params = [];
         let paramIndex = 1;
 
-        if (day) { query += ` AND mf.day = $${paramIndex++}`; params.push(day); }
-        if (meal_type) { query += ` AND mf.meal_type = $${paramIndex++}`; params.push(meal_type); }
-        if (rating) { query += ` AND mf.rating = $${paramIndex++}`; params.push(parseInt(rating)); }
+        if (meal_type) { query += ` AND meal_type = $${paramIndex++}`; params.push(meal_type); }
+        if (date) { query += ` AND DATE(created_at) = $${paramIndex++}`; params.push(date); }
+        if (Number.isInteger(rating) && rating >= 1 && rating <= 5) {
+            query += ` AND rating = $${paramIndex++}`;
+            params.push(rating);
+        }
 
-        // Get total count
         const countResult = await pool.query(
-            `SELECT COUNT(*) FROM meal_feedback mf WHERE 1=1${day ? ` AND mf.day = '${day}'` : ''}${meal_type ? ` AND mf.meal_type = '${meal_type}'` : ''}${rating ? ` AND mf.rating = ${parseInt(rating)}` : ''}`,
+            `SELECT COUNT(*)::int AS count FROM (${query}) AS filtered_feedback`,
+            params
         );
 
-        query += ` ORDER BY mf.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
-        params.push(parseInt(limit), parseInt(offset));
+        query += ` ORDER BY created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+        params.push(limit, offset);
 
         const result = await pool.query(query, params);
 
-        // Reshape to match the structure the frontend expects
-        const data = result.rows.map(row => ({
-            ...row,
-            user_profiles: {
-                full_name: row.user_full_name,
-                hostel_name: row.user_hostel_id
-            }
-        }));
-
-        res.json({ success: true, data, count: parseInt(countResult.rows[0].count) });
+        res.json({ success: true, data: result.rows, count: countResult.rows[0]?.count || 0 });
     } catch (error) {
         console.error('Feedback fetch error:', error);
         res.status(500).json({ error: 'Failed to fetch feedback' });
@@ -2263,25 +2279,40 @@ app.get('/api/chef/analytics', optionalAuth, async (req, res) => {
 });
 
 // GET /api/chef/feedback - Recent student meal feedback for kitchen review
-app.get('/api/chef/feedback', optionalAuth, async (req, res) => {
+app.get('/api/chef/feedback', authMiddleware, requireRole(['chef', 'mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     console.log('Route hit:', req.url);
     try {
         const limit = Math.min(parseInt(req.query.limit || '8', 10), 30);
+        const meal_type = normalizeMealType(req.query.meal_type);
+        const date = normalizeDateInput(req.query.date);
+        const filters = [];
+        const params = [];
+        let paramIndex = 1;
+
+        if (meal_type) {
+            filters.push(`meal_type = $${paramIndex++}`);
+            params.push(meal_type);
+        }
+        if (date) {
+            filters.push(`DATE(created_at) = $${paramIndex++}`);
+            params.push(date);
+        }
+
+        const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
         const [feedbackRes, summaryRes] = await Promise.all([
             pool.query(
-                "SELECT mf.id, mf.meal_type, mf.rating, mf.comment, mf.created_at, " +
-                "COALESCE(up.full_name, 'Student') AS student_name " +
-                "FROM meal_feedback mf " +
-                "LEFT JOIN user_profiles up ON mf.user_id = up.id " +
-                "ORDER BY mf.created_at DESC " +
-                "LIMIT $1",
-                [limit]
+                `SELECT id, meal_type, rating, message, created_at
+                 FROM feedback
+                 ${whereClause}
+                 ORDER BY created_at DESC
+                 LIMIT $${paramIndex}`,
+                [...params, limit]
             ),
             pool.query(
                 "SELECT COUNT(*)::int AS total_feedback, " +
                 "ROUND(COALESCE(AVG(rating), 0)::numeric, 1)::float AS avg_rating " +
-                "FROM meal_feedback " +
+                "FROM feedback " +
                 "WHERE created_at >= NOW() - INTERVAL '7 days'"
             )
         ]);

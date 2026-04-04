@@ -261,6 +261,16 @@ CREATE TABLE IF NOT EXISTS wastage_goals (
 -- DONATIONS
 -- ============================================
 
+-- Anonymous meal feedback
+CREATE TABLE IF NOT EXISTS feedback (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message TEXT NOT NULL,
+    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+    meal_type VARCHAR(20) NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_anonymous BOOLEAN NOT NULL DEFAULT true
+);
+
 -- Donation recipients (NGOs, charities)
 CREATE TABLE IF NOT EXISTS donation_recipients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -373,6 +383,8 @@ CREATE INDEX IF NOT EXISTS idx_inventory_expiry ON inventory(expiry_date);
 
 CREATE INDEX IF NOT EXISTS idx_wastage_logs_date ON wastage_logs(date);
 CREATE INDEX IF NOT EXISTS idx_wastage_logs_meal_type ON wastage_logs(meal_type);
+CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_meal_type ON feedback(meal_type);
 
 CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status);
 CREATE INDEX IF NOT EXISTS idx_donations_recipient ON donations(recipient_id);

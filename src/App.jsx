@@ -25,6 +25,7 @@ const ChefDashboard = lazy(() => import('./pages/chef/ChefDashboard'))
 const NGODashboard = lazy(() => import('./pages/ngo/NGODashboard'))
 
 const Impact = lazy(() => import('./pages/student/Impact'))
+const Feedback = lazy(() => import('./pages/student/Feedback'))
 const Settings = lazy(() => import('./pages/student/Settings'))
 const StudentMenu = lazy(() => import('./pages/student/StudentMenu'))
 const History = lazy(() => import('./pages/student/History'))
@@ -68,6 +69,7 @@ export default function App() {
                 <Route path="/dashboard" element={<ProtectedRoute allowedRoles={['student']}><StudentDashboard /></ProtectedRoute>} />
                 <Route path="/meal-booking" element={<ProtectedRoute allowedRoles={['student']}><MealBooking /></ProtectedRoute>} />
                 <Route path="/impact" element={<ProtectedRoute allowedRoles={['student']}><Impact /></ProtectedRoute>} />
+                <Route path="/student/feedback" element={<ProtectedRoute allowedRoles={['student']}><Feedback /></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute allowedRoles={['student']}><Settings /></ProtectedRoute>} />
                 <Route path="/student/menu" element={<ProtectedRoute allowedRoles={['student']}><StudentMenu /></ProtectedRoute>} />
                 <Route path="/history" element={<ProtectedRoute allowedRoles={['student']}><History /></ProtectedRoute>} />
@@ -105,7 +107,7 @@ export default function App() {
                 <Route path="/admin/inventory" element={<ProtectedRoute allowedRoles={['super_admin']}><Stock /></ProtectedRoute>} />
                 <Route path="/admin/donations" element={<ProtectedRoute allowedRoles={['super_admin']}><Hatchery /></ProtectedRoute>} />
                 <Route path="/admin/settings" element={<ProtectedRoute allowedRoles={['super_admin']}><System /></ProtectedRoute>} />
-                <Route path="/admin/feedback" element={<ProtectedRoute allowedRoles={['super_admin', 'mess_manager']}><FeedbackArchive /></ProtectedRoute>} />
+                <Route path="/admin/feedback" element={<ProtectedRoute allowedRoles={['super_admin', 'mess_manager', 'hostel_admin', 'chef']}><FeedbackArchive /></ProtectedRoute>} />
 
                 <Route path="/unauthorized" element={<Unauthorized />} />
                 <Route path="*" element={<NotFound />} />

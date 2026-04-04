@@ -97,6 +97,7 @@ export default function StudentDashboard() {
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                             <Button variant="outline" size="sm" className="!min-h-[44px]" onClick={() => navigate('/student/menu')}>Menu</Button>
+                            <Button variant="outline" size="sm" className="!min-h-[44px]" onClick={() => navigate('/student/feedback')}>Feedback</Button>
                             <Button variant="outline" size="sm" className="!min-h-[44px]" onClick={() => navigate('/attendance-history')}>Attendance</Button>
                             <Button size="sm" className="!min-h-[44px]" onClick={() => navigate('/scan-attendance')}>Scan QR</Button>
                             <Button variant="ghost" size="sm" className="!min-h-[44px] col-span-2 md:col-span-1" onClick={handleLogout}>Logout</Button>

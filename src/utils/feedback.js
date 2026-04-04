@@ -1,60 +1,71 @@
-import api from '../lib/api';
+import api from '../lib/api'
 
-/**
- * Save user feedback for a specific meal.
- * Uses upsert logic to enforce "one feedback per user/meal/day".
- * @param {Object} feedback - { user_id, user_role, day, meal_type, rating, comment, finalized_meal_id }
- */
-export async function saveFeedback({ user_id, user_role, day, meal_type, rating, comment, finalized_meal_id }) {
-    if (!rating) {
-        return { success: false, error: 'Rating is mandatory' };
+export const FEEDBACK_MEAL_TYPES = ['breakfast', 'lunch', 'dinner']
+export const FEEDBACK_MAX_LENGTH = 300
+
+function normalizeMessage(value = '') {
+    return String(value || '').trim().slice(0, FEEDBACK_MAX_LENGTH)
+}
+
+export async function submitAnonymousFeedback({ message, rating, meal_type }) {
+    const normalizedMessage = normalizeMessage(message)
+    const normalizedMealType = FEEDBACK_MEAL_TYPES.includes(meal_type) ? meal_type : ''
+    const hasRating = rating !== undefined && rating !== null && String(rating).trim() !== ''
+    const normalizedRating = hasRating ? Number(rating) : null
+
+    if (!normalizedMessage) {
+        return { success: false, error: 'Feedback message is required' }
     }
 
-    if (comment && comment.length > 300) {
-        return { success: false, error: 'Comment exceeds 300 characters' };
+    if (normalizedMessage.length > FEEDBACK_MAX_LENGTH) {
+        return { success: false, error: `Feedback message exceeds ${FEEDBACK_MAX_LENGTH} characters` }
+    }
+
+    if (!normalizedMealType) {
+        return { success: false, error: 'Meal type is required' }
+    }
+
+    if (hasRating && (!Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5)) {
+        return { success: false, error: 'Rating must be between 1 and 5' }
     }
 
     try {
         const data = await api.post('/api/feedback', {
-            user_id,
-            user_role,
-            day,
-            meal_type,
-            rating,
-            comment,
-            finalized_meal_id
-        });
+            message: normalizedMessage,
+            rating: normalizedRating,
+            meal_type: normalizedMealType
+        })
 
-        return { success: true, data };
+        return { success: true, data: data?.data || data }
     } catch (error) {
-        console.error('Error saving feedback:', error);
-        return { success: false, error: error.message };
+        console.error('Error submitting feedback:', error)
+        return { success: false, error: error.message }
     }
 }
 
-/**
- * Fetch feedback with filters (Admin use).
- */
-export async function fetchFeedback({ day, meal_type, rating, limit = 50, offset = 0 } = {}) {
+export async function fetchFeedback({ meal_type, date, rating, limit = 50, offset = 0 } = {}) {
     try {
-        const params = new URLSearchParams();
-        if (day) params.set('day', day);
-        if (meal_type) params.set('meal_type', meal_type);
-        if (rating) params.set('rating', rating);
-        params.set('limit', limit);
-        params.set('offset', offset);
+        const params = new URLSearchParams()
+        if (meal_type) params.set('meal_type', meal_type)
+        if (date) params.set('date', date)
+        if (rating) params.set('rating', rating)
+        params.set('limit', limit)
+        params.set('offset', offset)
 
-        const result = await api.get(`/api/feedback?${params.toString()}`);
-        return { success: true, data: result.data, count: result.count };
+        const result = await api.get(`/api/feedback?${params.toString()}`)
+        return {
+            success: true,
+            data: Array.isArray(result?.data) ? result.data : [],
+            count: Number(result?.count || 0)
+        }
     } catch (error) {
-        console.error('Error fetching feedback:', error);
-        return { success: false, error: error.message };
+        console.error('Error fetching feedback:', error)
+        return { success: false, error: error.message, data: [], count: 0 }
     }
 }
 
-/**
- * Fetch latest feedback for dashboard preview.
- */
 export async function fetchLatestFeedback(limit = 5) {
-    return fetchFeedback({ limit });
+    return fetchFeedback({ limit })
 }
+
+export const saveFeedback = submitAnonymousFeedback

@@ -132,6 +132,7 @@ export default function ChefDashboard() {
     const [feedback, setFeedback] = useState([]);
     const [feedbackSummary, setFeedbackSummary] = useState({ avg_rating: 0, total_feedback: 0 });
     const [insights, setInsights] = useState({ last_7_days_count: 0 });
+    const [feedbackFilters, setFeedbackFilters] = useState({ meal_type: '', date: '' });
     const [analytics, setAnalytics] = useState({ weekly_waste: [], waste_by_meal: [], waste_trend: [], efficiency: normalizeEfficiency({}) });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -140,7 +141,7 @@ export default function ChefDashboard() {
     const scheduledMeals = menu.length;
     const sectionLabel = CHEF_SECTION_LINKS.find((s) => s.key === activeSection)?.label || 'KITCHEN';
 
-    useEffect(() => { fetchDashboardData(); }, []);
+    useEffect(() => { fetchDashboardData(); }, [feedbackFilters.date, feedbackFilters.meal_type]);
 
     async function fetchDashboardData() {
         setLoading(true);
@@ -150,7 +151,11 @@ export default function ChefDashboard() {
             { key: 'inventory', label: 'kitchen inventory', path: '/api/chef/inventory' },
             { key: 'prediction', label: 'production predictions', path: '/api/chef/prediction' },
             { key: 'analytics', label: 'production analytics', path: '/api/chef/analytics' },
-            { key: 'feedback', label: 'feedback', path: '/api/chef/feedback?limit=8' }
+            {
+                key: 'feedback',
+                label: 'feedback',
+                path: `/api/chef/feedback?limit=20${feedbackFilters.meal_type ? `&meal_type=${feedbackFilters.meal_type}` : ''}${feedbackFilters.date ? `&date=${feedbackFilters.date}` : ''}`
+            }
         ];
 
         const results = await Promise.allSettled(
@@ -328,20 +333,45 @@ export default function ChefDashboard() {
                             <h2 className="text-2xl font-black italic uppercase tracking-tighter">Student Feedback</h2>
                             <div className="text-sm font-bold text-white/60 uppercase tracking-widest">Last 7 days: {insights.last_7_days_count} reviews | Avg: {feedbackSummary.avg_rating}/5</div>
                         </div>
+                        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-4">
+                            <select
+                                value={feedbackFilters.meal_type}
+                                onChange={(event) => setFeedbackFilters((prev) => ({ ...prev, meal_type: event.target.value }))}
+                                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm uppercase tracking-widest outline-none focus:border-creative-lime/40"
+                            >
+                                <option value="">All meals</option>
+                                <option value="breakfast">Breakfast</option>
+                                <option value="lunch">Lunch</option>
+                                <option value="dinner">Dinner</option>
+                            </select>
+                            <input
+                                type="date"
+                                value={feedbackFilters.date}
+                                onChange={(event) => setFeedbackFilters((prev) => ({ ...prev, date: event.target.value }))}
+                                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm uppercase tracking-widest outline-none focus:border-creative-lime/40"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setFeedbackFilters({ meal_type: '', date: '' })}
+                                className="rounded-2xl border border-white/10 px-4 py-4 text-sm font-black uppercase tracking-widest text-white/70 transition hover:bg-white/5 hover:text-white"
+                            >
+                                Reset Filters
+                            </button>
+                        </div>
                         <div className="bg-white/5 border border-white/10 rounded-3xl p-6">
                             {feedback.length === 0 ? <p className="text-white/40 text-center py-8 uppercase tracking-widest text-sm">No feedback available yet.</p> : (
                                 <div className="space-y-4">
                                     {feedback.map((item) => (
                                         <div key={item.id} className="bg-black/40 rounded-2xl p-4 border border-white/10">
                                             <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-                                                <div className="font-black uppercase tracking-wider text-white">{item.student_name}</div>
+                                                <div className="font-black uppercase tracking-wider text-creative-lime">Anonymous Feedback</div>
                                                 <div className="flex items-center gap-3 text-xs uppercase tracking-widest text-white/50">
                                                     <span>{item.meal_type}</span>
                                                     <span>{formatDate(item.created_at)}</span>
                                                 </div>
                                             </div>
                                             <div className="mb-2"><RatingStars value={item.rating} /></div>
-                                            <p className="text-white/80 text-sm">{item.comment || 'No comment provided.'}</p>
+                                            <p className="text-white/80 text-sm">{item.message || 'No message provided.'}</p>
                                         </div>
                                     ))}
                                 </div>
