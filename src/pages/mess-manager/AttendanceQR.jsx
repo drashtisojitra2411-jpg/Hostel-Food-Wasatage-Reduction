@@ -1,171 +1,183 @@
-import { useEffect, useState } from 'react';
-import Navigation from '../../components/layout/Navigation';
-import Card from '../../components/common/Card';
-import Button from '../../components/common/Button';
-import Toast from '../../components/common/Toast';
-import api from '../../lib/api';
-import { formatTime12h, getMealTimingForType } from '../../../shared/mealTimings';
-import { ATTENDANCE_QR_EXPECTED_FORMAT } from '../../../shared/attendanceQr';
+import { useEffect, useMemo, useState } from 'react'
+import Navigation from '../../components/layout/Navigation'
+import Card from '../../components/common/Card'
+import Button from '../../components/common/Button'
+import Toast from '../../components/common/Toast'
+import api from '../../lib/api'
+import { ATTENDANCE_QR_EXPECTED_FORMAT } from '../../../shared/attendanceQr'
+
+const MEAL_OPTIONS = ['breakfast', 'lunch', 'dinner']
+
+function getTodayDate() {
+    return new Date().toISOString().slice(0, 10)
+}
+
+function formatMealLabel(value = '') {
+    return String(value).replace(/^\w/, (char) => char.toUpperCase())
+}
 
 export default function AttendanceQR() {
-    const [meals, setMeals] = useState([]);
-    const [selectedMealId, setSelectedMealId] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [qrData, setQrData] = useState(null);
-    const [mealWindow, setMealWindow] = useState(null);
-    const [toastMessage, setToastMessage] = useState('');
-    const [toastType, setToastType] = useState('info');
+    const [selectedDate, setSelectedDate] = useState(getTodayDate())
+    const [selectedMealType, setSelectedMealType] = useState('lunch')
+    const [availableMeals, setAvailableMeals] = useState([])
+    const [loadingMeals, setLoadingMeals] = useState(false)
+    const [loadingQr, setLoadingQr] = useState(false)
+    const [qrData, setQrData] = useState(null)
+    const [toastMessage, setToastMessage] = useState('')
+    const [toastType, setToastType] = useState('info')
 
     useEffect(() => {
-        fetchMeals();
-        fetchMealTimings();
-    }, []);
+        fetchMeals(selectedDate)
+    }, [selectedDate])
 
-    async function fetchMeals() {
+    async function fetchMeals(date) {
+        setLoadingMeals(true)
         try {
-            const today = new Date().toISOString().slice(0, 10);
-            const data = await api.get(`/api/meals?date=${today}`);
-            setMeals(Array.isArray(data) ? data : []);
-            if (Array.isArray(data) && data.length > 0) {
-                setSelectedMealId(data[0].id);
+            const data = await api.get(`/api/meals?date=${date}`)
+            const meals = Array.isArray(data) ? data : []
+            setAvailableMeals(meals)
+
+            const hasSelectedMeal = meals.some((meal) => meal.meal_type === selectedMealType)
+            if (!hasSelectedMeal && meals.length > 0) {
+                setSelectedMealType(meals[0].meal_type)
             }
-        } catch (err) {
-            showToast(err.message || 'Failed to load meals', 'error');
-        }
-    }
-
-    async function fetchMealTimings() {
-        try {
-            const data = await api.get('/api/meal-timings/current');
-            setMealWindow(data);
-        } catch {
-            // non-blocking
+        } catch (error) {
+            setAvailableMeals([])
+            showToast(error.message || 'Failed to load meals', 'error')
+        } finally {
+            setLoadingMeals(false)
         }
     }
 
     async function generateQr() {
-        if (!selectedMealId) return;
-        setLoading(true);
-        setQrData(null);
+        setLoadingQr(true)
         try {
-            const data = await api.get(`/api/generate-qr/${selectedMealId}`);
-            setQrData(data);
-            showToast(`QR generated for ${(data.meal_type || 'meal').toUpperCase()}`, 'success');
-        } catch (err) {
-            showToast(err.message || 'Failed to generate QR', 'error');
+            const data = await api.post('/api/generate-qr', {
+                meal_type: selectedMealType,
+                date: selectedDate
+            })
+            setQrData(data)
+            showToast(`QR ready for ${formatMealLabel(selectedMealType)}`, 'success')
+        } catch (error) {
+            setQrData(null)
+            showToast(error.message || 'Failed to generate QR', 'error')
         } finally {
-            setLoading(false);
+            setLoadingQr(false)
         }
     }
 
     function showToast(message, type = 'info') {
-        setToastMessage(message);
-        setToastType(type);
+        setToastMessage(message)
+        setToastType(type)
     }
 
-    function getMealDisplayWindow(meal) {
-        const timing = getMealTimingForType(meal?.meal_type);
-        const start = timing?.start || String(meal?.start_time || '').slice(0, 5);
-        const end = timing?.end || String(meal?.end_time || '').slice(0, 5);
-        return `${formatTime12h(start)} - ${formatTime12h(end)}`;
-    }
+    const selectedMeal = useMemo(
+        () => availableMeals.find((meal) => meal.meal_type === selectedMealType) || null,
+        [availableMeals, selectedMealType]
+    )
+
+    const qrStatus = qrData?.status === 'active' ? 'QR Active' : qrData ? 'Scheduled QR' : 'No QR generated'
 
     return (
         <div className="min-h-screen bg-black text-white selection:bg-creative-lime selection:text-black">
             <Navigation />
             <main className="lg:ml-72 min-h-screen p-6 lg:p-12">
-                <div className="max-w-3xl mx-auto space-y-6">
+                <div className="max-w-4xl mx-auto space-y-6">
                     <Card variant="premium" className="p-6 sm:p-8">
-                        <h1 className="text-3xl sm:text-4xl font-black italic tracking-tight uppercase mb-2">Attendance QR Generator</h1>
-                        <p className="text-sm text-white/50 font-medium">Generate attendance QR for the active meal window.</p>
+                        <p className="text-xs uppercase tracking-[0.35em] text-white/40">Attendance Control</p>
+                        <h1 className="mt-2 text-3xl sm:text-4xl font-black italic tracking-tight uppercase">Generate Attendance QR</h1>
+                        <p className="mt-3 text-sm text-white/55">Select the meal window, verify the preview, and publish the live QR for student scans.</p>
                     </Card>
 
-                    {mealWindow?.active_meal && (
-                        <div className="rounded-xl border border-creative-lime/30 bg-creative-lime/10 px-4 py-3 flex items-center gap-3">
-                            <span className="relative flex h-3 w-3">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-creative-lime opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-3 w-3 bg-creative-lime"></span>
-                            </span>
-                            <p className="text-sm font-semibold text-creative-lime">
-                                {mealWindow.active_meal.meal_name.charAt(0).toUpperCase() + mealWindow.active_meal.meal_name.slice(1)} window active
-                                <span className="font-normal text-white/50 ml-2">
-                                    {mealWindow.active_meal.start_time_display} - {mealWindow.active_meal.end_time_display}
-                                </span>
-                            </p>
-                        </div>
-                    )}
-
-                    <Card variant="glass" className="p-6 sm:p-8 space-y-5">
-                        <div>
-                            <label className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2 block">Select Meal</label>
-                            <div className="relative">
-                                <select
-                                    value={selectedMealId}
-                                    onChange={(e) => { setSelectedMealId(e.target.value); setQrData(null); }}
-                                    className="w-full appearance-none rounded-xl border border-white/15 bg-black/60 px-4 py-3 pr-12 text-sm font-semibold text-white transition-all duration-200 hover:border-white/30 focus:border-creative-lime/60 focus:outline-none focus:ring-2 focus:ring-creative-lime/20"
-                                >
-                                    {meals.map((meal) => (
-                                        <option key={meal.id} value={meal.id} className="bg-black text-white">
-                                            {String(meal.meal_type).toUpperCase()} | {getMealDisplayWindow(meal)}
-                                        </option>
-                                    ))}
-                                </select>
-                                <span className="pointer-events-none absolute inset-y-0 right-4 flex items-center text-white/60">
-                                    v
-                                </span>
-                            </div>
-                        </div>
-                        <Button onClick={generateQr} isLoading={loading} disabled={!selectedMealId} className="w-full !min-h-[52px] !font-bold">
-                            GENERATE QR CODE
-                        </Button>
-                    </Card>
-
-                    {qrData?.qr_image && (
-                        <Card variant="glass" className="p-6 sm:p-8 text-center">
-                            <img
-                                src={qrData.qr_image}
-                                alt="Meal Attendance QR"
-                                className="mx-auto w-72 h-72 sm:w-80 sm:h-80 rounded-2xl border border-white/10 bg-white p-3"
-                            />
-                            <div className="mt-4 space-y-1">
-                                <p className="text-lg font-bold text-creative-lime">
-                                    {(qrData.meal_type || 'meal').toUpperCase()}
-                                </p>
-                                {qrData.timing && (
-                                    <p className="text-sm text-white/50">
-                                        Window: {qrData.timing.start_display} - {qrData.timing.end_display}
-                                    </p>
-                                )}
-                                <p className="text-sm font-bold uppercase tracking-wider text-white/60">
-                                    Valid until this meal window ends
-                                </p>
-                                <p className="text-xs text-white/35">
-                                    QR format: {ATTENDANCE_QR_EXPECTED_FORMAT}
-                                </p>
-                            </div>
-                        </Card>
-                    )}
-
-                    {mealWindow?.all_timings && (
-                        <Card variant="glass" className="p-5">
-                            <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">Meal Schedule (IST)</h2>
-                            <div className="grid grid-cols-3 gap-2">
-                                {mealWindow.all_timings.map((t) => (
-                                    <div
-                                        key={t.meal_name}
-                                        className={`text-center rounded-xl px-3 py-3 ${
-                                            t.is_active
-                                                ? 'bg-creative-lime/15 border border-creative-lime/30 text-creative-lime'
-                                                : 'bg-white/5 text-white/40'
-                                        }`}
+                    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
+                        <Card variant="glass" className="p-6 space-y-5">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <label className="block">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white/35">Date</span>
+                                    <input
+                                        type="date"
+                                        value={selectedDate}
+                                        onChange={(event) => {
+                                            setSelectedDate(event.target.value)
+                                            setQrData(null)
+                                        }}
+                                        className="mt-2 w-full rounded-2xl border border-white/10 bg-black px-4 py-4 text-sm outline-none focus:border-creative-lime/40"
+                                    />
+                                </label>
+                                <label className="block">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white/35">Meal</span>
+                                    <select
+                                        value={selectedMealType}
+                                        onChange={(event) => {
+                                            setSelectedMealType(event.target.value)
+                                            setQrData(null)
+                                        }}
+                                        className="mt-2 w-full rounded-2xl border border-white/10 bg-black px-4 py-4 text-sm outline-none focus:border-creative-lime/40"
                                     >
-                                        <p className="text-xs font-bold uppercase">{t.meal_name}</p>
-                                        <p className="text-sm mt-1">{t.start_time_display} - {t.end_time_display}</p>
+                                        {MEAL_OPTIONS.map((meal) => (
+                                            <option key={meal} value={meal}>
+                                                {formatMealLabel(meal)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                                <div className="flex items-center justify-between gap-4">
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-[0.3em] text-white/35">QR Status</p>
+                                        <p className={`mt-2 text-2xl font-black ${qrData?.status === 'active' ? 'text-creative-lime' : 'text-white'}`}>{qrStatus}</p>
                                     </div>
-                                ))}
+                                    <Button onClick={generateQr} isLoading={loadingQr} disabled={loadingMeals}>
+                                        Generate QR
+                                    </Button>
+                                </div>
+                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                                    <div className="rounded-xl border border-white/10 bg-black/40 px-4 py-3">
+                                        <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Meal</p>
+                                        <p className="mt-2 font-semibold">{formatMealLabel(selectedMealType)}</p>
+                                    </div>
+                                    <div className="rounded-xl border border-white/10 bg-black/40 px-4 py-3">
+                                        <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Date</p>
+                                        <p className="mt-2 font-semibold">{selectedDate}</p>
+                                    </div>
+                                    <div className="rounded-xl border border-white/10 bg-black/40 px-4 py-3">
+                                        <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Window</p>
+                                        <p className="mt-2 font-semibold">
+                                            {qrData?.timing ? `${qrData.timing.start_display} - ${qrData.timing.end_display}` : selectedMeal ? `${selectedMeal.start_time?.slice(0, 5)} - ${selectedMeal.end_time?.slice(0, 5)}` : '--'}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
+                                <p className="text-[10px] uppercase tracking-[0.3em] text-white/35">Payload Contract</p>
+                                <p className="mt-3 text-sm text-white/60">Students scan one shared QR. The backend identifies the logged-in student, validates the meal window, blocks duplicate scans, and marks attendance on the canonical meal record.</p>
+                                <code className="mt-3 block text-xs text-creative-lime break-all">{ATTENDANCE_QR_EXPECTED_FORMAT}</code>
                             </div>
                         </Card>
-                    )}
+
+                        <Card variant="glass" className="p-6 text-center">
+                            <p className="text-[10px] uppercase tracking-[0.3em] text-white/35">QR Preview</p>
+                            {qrData?.qr_image ? (
+                                <>
+                                    <img
+                                        src={qrData.qr_image}
+                                        alt="Attendance QR"
+                                        className="mx-auto mt-4 w-72 h-72 rounded-2xl border border-white/10 bg-white p-3"
+                                    />
+                                    <p className="mt-4 text-lg font-black text-creative-lime">{formatMealLabel(qrData.meal_type)}</p>
+                                    <p className="mt-1 text-sm text-white/55">{qrData.date}</p>
+                                    <p className="mt-1 text-sm text-white/55">Expires at {new Date(qrData.expires_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p>
+                                </>
+                            ) : (
+                                <div className="mt-6 rounded-2xl border border-dashed border-white/10 px-6 py-16 text-sm text-white/45">
+                                    {loadingMeals ? 'Loading meal slots...' : 'Generate a QR to preview it here.'}
+                                </div>
+                            )}
+                        </Card>
+                    </div>
                 </div>
             </main>
 
@@ -176,5 +188,5 @@ export default function AttendanceQR() {
                 onClose={() => setToastMessage('')}
             />
         </div>
-    );
+    )
 }

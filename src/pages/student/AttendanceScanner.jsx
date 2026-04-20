@@ -43,7 +43,7 @@ export default function AttendanceScanner() {
         return protocol === 'https:' || LOCAL_HOSTS.has(host)
     }, [])
 
-    // Fetch current meal window on mount and poll every 60s
+    // Fetch current meal window on mount and poll frequently so the scanner reflects live meal changes.
     useEffect(() => {
         let cancelled = false
         async function fetchMealWindow() {
@@ -55,7 +55,7 @@ export default function AttendanceScanner() {
             }
         }
         fetchMealWindow()
-        const interval = setInterval(fetchMealWindow, 60_000)
+        const interval = setInterval(fetchMealWindow, 15_000)
         return () => { cancelled = true; clearInterval(interval) }
     }, [])
 
@@ -150,8 +150,7 @@ export default function AttendanceScanner() {
         setIsSubmitting(true)
 
         try {
-            const response = await api.post('/api/attendance', {
-                meal_type: parsedQr.mealType,
+            const response = await api.post('/api/scan-qr', {
                 qr_data: decodedText
             })
 
@@ -164,7 +163,7 @@ export default function AttendanceScanner() {
 
             if (normalized.includes('already marked') || normalized.includes('already')) {
                 showToast('Attendance already marked', 'warning')
-            } else if (normalized.includes('meal time is over') || normalized.includes('outside') || normalized.includes('allowed from')) {
+            } else if (normalized.includes('meal window') || normalized.includes('outside') || normalized.includes('allowed from')) {
                 showToast('Meal time is over', 'warning')
             } else if (normalized.includes('invalid qr code')) {
                 showToast('Invalid QR code. Please scan the official hostel QR.', 'error')

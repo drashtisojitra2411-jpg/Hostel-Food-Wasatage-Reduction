@@ -39,6 +39,14 @@ export default function AttendancePage() {
         fetchAttendance()
     }, [filters.date, filters.mealType])
 
+    useEffect(() => {
+        const interval = setInterval(() => {
+            fetchAttendance()
+        }, 15000)
+
+        return () => clearInterval(interval)
+    }, [filters.date, filters.mealType])
+
     async function fetchAttendance() {
         setLoading(true)
         setError('')
@@ -60,7 +68,7 @@ export default function AttendancePage() {
                 totalAbsent: Number(response?.total_absent || 0),
                 totals: response?.totals || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
                 presentUsers: Array.isArray(response?.present_users) ? response.present_users : records.filter((row) => row.status === 'present'),
-                absentUsers: Array.isArray(response?.absent_users) ? response.absent_users : records.filter((row) => row.status === 'absent')
+                absentUsers: Array.isArray(response?.absent_users) ? response.absent_users : records.filter((row) => row.status === 'absent' || row.status === 'pending')
             })
         } catch (fetchError) {
             setAttendance({
@@ -144,7 +152,7 @@ export default function AttendancePage() {
                                     </select>
                                 </label>
                                 <div className="text-sm text-white/45">
-                                    Present and absent lists are auto-synced from booked meals once the meal window closes.
+                                    Booked students stay in the absent list until they scan. Pending and absent both count as absent here.
                                 </div>
                             </div>
                         </Card>
@@ -214,7 +222,7 @@ export default function AttendancePage() {
                     <Card variant="premium" className="p-0 border-white/5 overflow-hidden">
                         <div className="px-6 py-5 border-b border-white/10">
                             <h2 className="text-2xl font-black uppercase tracking-tight text-red-400">Absent Users</h2>
-                            <p className="text-sm text-white/45 mt-1">Booked students who did not scan before the meal window ended.</p>
+                                <p className="text-sm text-white/45 mt-1">All booked students who are still pending or already marked absent.</p>
                         </div>
 
                         {loading ? (

@@ -1,7 +1,7 @@
 import { normalizeMealTimingType } from './mealTimings.js';
 
 export const ATTENDANCE_QR_REQUIRED_FIELD = 'meal_type';
-export const ATTENDANCE_QR_EXPECTED_FORMAT = '{"meal_type":"breakfast"}';
+export const ATTENDANCE_QR_EXPECTED_FORMAT = '{"meal_type":"breakfast","date":"2026-04-20","expires_at":"2026-04-20T10:00:00.000Z"}';
 
 export function normalizeAttendanceMealType(value) {
     return normalizeMealTimingType(value);
@@ -20,6 +20,14 @@ export function buildAttendanceQrPayload(input) {
     }
 
     const qrPayload = { [ATTENDANCE_QR_REQUIRED_FIELD]: normalizedMealType };
+
+    if (payload.date) {
+        qrPayload.date = String(payload.date);
+    }
+
+    if (payload.expiresAt || payload.expires_at) {
+        qrPayload.expires_at = String(payload.expiresAt || payload.expires_at);
+    }
 
     if (payload.mealId || payload.meal_id) {
         qrPayload.meal_id = String(payload.mealId || payload.meal_id);
@@ -45,6 +53,8 @@ export function parseAttendanceQrPayload(input) {
         mealId: '',
         userId: '',
         qrToken: '',
+        date: '',
+        expiresAt: '',
         format: ATTENDANCE_QR_EXPECTED_FORMAT,
         isValid: false,
         reason: rawValue ? 'missing_required_data' : 'empty'
@@ -83,6 +93,8 @@ export function parseAttendanceQrPayload(input) {
         const mealId = parsedValue?.meal_id ? String(parsedValue.meal_id) : '';
         const userId = parsedValue?.user_id ? String(parsedValue.user_id) : '';
         const qrToken = parsedValue?.qr_token ? String(parsedValue.qr_token) : '';
+        const date = parsedValue?.date ? String(parsedValue.date) : '';
+        const expiresAt = parsedValue?.expires_at ? String(parsedValue.expires_at) : '';
 
         return {
             ...result,
@@ -91,6 +103,8 @@ export function parseAttendanceQrPayload(input) {
             mealId,
             userId,
             qrToken,
+            date,
+            expiresAt,
             isValid: Boolean(mealType),
             reason: mealType ? 'ok' : 'missing_required_data'
         };

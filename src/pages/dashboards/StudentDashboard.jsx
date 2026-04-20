@@ -7,18 +7,11 @@ import Button from '../../components/common/Button'
 import WeeklyMenu from '../../components/common/WeeklyMenu'
 import api from '../../lib/api'
 
-const preferenceOptions = [
-    { id: 'veg', label: 'Veg Standard', desc: 'Plant-based meals for daily intake.' },
-    { id: 'jain', label: 'Jain Protocol', desc: 'Strict root-free meals.' },
-    { id: 'egg', label: 'Egg Reinforced', desc: 'Protein-focused meal option.' }
-]
-
 export default function StudentDashboard() {
     const { profile, signOut } = useAuth()
     const navigate = useNavigate()
 
-    const [selectedPreference, setSelectedPreference] = useState(null)
-    const [stats, setStats] = useState({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, attendanceRate: 0, donations: 0 })
+    const [stats, setStats] = useState({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, presentAbsentRatio: 0, donations: 0 })
     const [activities, setActivities] = useState([])
     const [rewardSummary, setRewardSummary] = useState({
         rewards: { points: 0, total_meals: 0, total_rewards: 0 },
@@ -39,16 +32,15 @@ export default function StudentDashboard() {
     const firstName = useMemo(() => profile?.full_name?.split(' ')?.[0] || 'Student', [profile?.full_name])
 
     const statCards = useMemo(() => [
-        { label: 'Meals Booked', value: stats.mealsBooked },
-        { label: 'Meals Attended', value: stats.mealsAttended },
-        { label: 'Meals Skipped', value: stats.mealsSkipped },
-        { label: 'Attendance Rate', value: `${stats.attendanceRate}%` }
+        { label: 'Total Meals Booked', value: stats.mealsBooked },
+        { label: 'Total Meals Attended', value: stats.mealsAttended },
+        { label: 'Total Meals Skipped', value: stats.mealsSkipped },
+        { label: 'Present / Absent Ratio', value: stats.presentAbsentRatio }
     ], [stats])
 
     const rewardsProgress = useMemo(() => {
         const points = Number(rewardSummary?.rewards?.points || 0)
-        const progressBase = 100
-        return Math.min(100, (points % progressBase))
+        return Math.min(100, points % 100)
     }, [rewardSummary?.rewards?.points])
 
     const fetchDashboardData = useCallback(async (month = billingMonth) => {
@@ -64,20 +56,20 @@ export default function StudentDashboard() {
                 mealsBooked: dashboardRes?.meals_booked || 0,
                 mealsAttended: dashboardRes?.meals_attended || 0,
                 mealsSkipped: dashboardRes?.meals_skipped || 0,
-                attendanceRate: dashboardRes?.attendance_rate || 0,
+                presentAbsentRatio: dashboardRes?.present_absent_ratio || 0,
                 donations: dashboardRes?.donations_completed || 0
             })
 
             const latest = (Array.isArray(historyRes) ? historyRes : []).slice(0, 3).map((row) => ({
                 id: row.id,
-                title: `${String(row.meal_type || 'Meal').toUpperCase()} ${String(row.status || '').toUpperCase()}`,
-                time: row.booking_date || 'N/A'
+                title: `${String(row.meal_type || row.meal || 'Meal').toUpperCase()} ${String(row.status || '').toUpperCase()}`,
+                time: row.booking_date || row.date || 'N/A'
             }))
             setActivities(latest)
-            setRewardSummary(rewardsRes || rewardSummary)
+            setRewardSummary(rewardsRes || null)
             setBillingSummary(billingRes || null)
         } catch {
-            setStats({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, attendanceRate: 0, donations: 0 })
+            setStats({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, presentAbsentRatio: 0, donations: 0 })
             setActivities([])
             setBillingSummary(null)
         }
@@ -85,7 +77,15 @@ export default function StudentDashboard() {
 
     useEffect(() => {
         fetchDashboardData(billingMonth)
-    }, [fetchDashboardData, billingMonth])
+    }, [billingMonth, fetchDashboardData])
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            fetchDashboardData(billingMonth)
+        }, 15000)
+
+        return () => clearInterval(interval)
+    }, [billingMonth, fetchDashboardData])
 
     async function handlePayNow() {
         if (!billingSummary?.billing || paying) return
@@ -113,6 +113,7 @@ export default function StudentDashboard() {
                         <div>
                             <p className="text-sm text-white/70">{greeting}</p>
                             <h1 className="text-2xl md:text-3xl lg:text-4xl font-semibold tracking-tight">{firstName}</h1>
+                            <p className="mt-2 text-sm text-white/55">These dashboard meal metrics are now aggregated across all students from the shared meal records dataset.</p>
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                             <Button variant="outline" size="sm" className="!min-h-[44px]" onClick={() => navigate('/student/menu')}>Menu</Button>
@@ -181,7 +182,7 @@ export default function StudentDashboard() {
                             <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
                                 <div>
                                     <h2 className="text-lg md:text-xl font-semibold tracking-tight">Monthly Bill Breakdown</h2>
-                                    <p className="text-sm text-white/60 mt-1">Base: booked meals x ₹100, rewards: attended meals x ₹10, penalties after every 4 skipped meals.</p>
+                                    <p className="text-sm text-white/60 mt-1">Base: booked meals x INR 100, rewards: attended meals x INR 10, penalties after every 4 skipped meals.</p>
                                 </div>
                                 <input
                                     type="month"
@@ -195,8 +196,8 @@ export default function StudentDashboard() {
                                     { label: 'Booked', value: billingSummary?.monthly_breakdown?.total_meals_booked ?? 0 },
                                     { label: 'Attended', value: billingSummary?.monthly_breakdown?.total_meals_attended ?? 0, tone: 'text-creative-lime' },
                                     { label: 'Skipped', value: billingSummary?.monthly_breakdown?.total_meals_skipped ?? 0, tone: 'text-red-400' },
-                                    { label: 'Rewards', value: `₹${billingSummary?.monthly_breakdown?.total_rewards ?? 0}`, tone: 'text-creative-lime' },
-                                    { label: 'Penalties', value: `₹${billingSummary?.monthly_breakdown?.total_penalty_amount ?? 0}`, tone: 'text-red-400' }
+                                    { label: 'Rewards', value: `INR ${billingSummary?.monthly_breakdown?.total_rewards ?? 0}`, tone: 'text-creative-lime' },
+                                    { label: 'Penalties', value: `INR ${billingSummary?.monthly_breakdown?.total_penalty_amount ?? 0}`, tone: 'text-red-400' }
                                 ].map((item) => (
                                     <div key={item.label} className="rounded-xl border border-white/15 bg-white/5 px-4 py-4">
                                         <p className="text-xs text-white/60">{item.label}</p>
@@ -207,7 +208,7 @@ export default function StudentDashboard() {
                             <div className="mt-4 rounded-xl border border-white/15 bg-white/5 px-4 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                                 <div>
                                     <p className="text-xs text-white/60">Final Payable Amount</p>
-                                    <p className="mt-2 text-3xl font-semibold tracking-tight">₹{billingSummary?.monthly_breakdown?.final_amount ?? 0}</p>
+                                    <p className="mt-2 text-3xl font-semibold tracking-tight">INR {billingSummary?.monthly_breakdown?.final_amount ?? 0}</p>
                                     <p className={`text-sm mt-1 ${(billingSummary?.monthly_breakdown?.payment_status || 'unpaid') === 'paid' ? 'text-creative-lime' : 'text-red-400'}`}>
                                         {(billingSummary?.monthly_breakdown?.payment_status || 'unpaid').toUpperCase()}
                                     </p>
@@ -244,8 +245,8 @@ export default function StudentDashboard() {
                                     <p className="text-sm text-white/70 mt-1">Skipping 4 booked meals triggers a penalty and resets the skip counter.</p>
                                 </div>
                                 <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-                                    <p className="text-xs uppercase tracking-widest text-white/60">Dummy Payment Gateway</p>
-                                    <p className="text-sm text-white/70 mt-1">`Pay Now` marks the selected monthly bill as paid and stores a demo transaction record.</p>
+                                    <p className="text-xs uppercase tracking-widest text-white/60">Payment Status</p>
+                                    <p className="text-sm text-white/70 mt-1">Your bill remains personal, but the dashboard meal metrics above are global across all students.</p>
                                 </div>
                             </div>
                         </Card>

@@ -266,8 +266,7 @@ async function syncSkippedBookings(client, { userId = '', bookingDate = '', meal
     const params = [];
     const filters = [
         "mb.status IN ('confirmed', 'booked')",
-        "COALESCE(mb.attendance_status, 'pending') <> 'present'",
-        'a.id IS NULL'
+        "COALESCE(NULLIF(mb.attendance_status, ''), 'pending') <> 'present'"
     ];
     let index = 1;
 
@@ -297,7 +296,6 @@ async function syncSkippedBookings(client, { userId = '', bookingDate = '', meal
          FROM meal_bookings mb
          JOIN meals m ON m.id = mb.meal_id
          LEFT JOIN meal_timings mt ON mt.meal_name = m.meal_type
-         LEFT JOIN attendance a ON a.user_id = mb.user_id AND a.meal_id = mb.meal_id
          WHERE ${filters.join(' AND ')}`,
         [...params, DEFAULT_MEAL_BASE_FEE]
     );
@@ -305,18 +303,6 @@ async function syncSkippedBookings(client, { userId = '', bookingDate = '', meal
     for (const booking of skippedCandidates.rows) {
         const endTime = String(booking.end_time || '').slice(0, 5);
         if (!hasMealWindowEnded(booking.date, endTime, reference)) {
-            continue;
-        }
-
-        const attendanceInsert = await client.query(
-            `INSERT INTO attendance (user_id, meal_id, attendance_date, meal_type, status)
-             VALUES ($1, $2, $3, $4, 'absent')
-             ON CONFLICT (user_id, attendance_date, meal_type) DO NOTHING
-             RETURNING id`,
-            [booking.user_id, booking.meal_id, booking.date, normalizeMealType(booking.meal_type)]
-        );
-
-        if (attendanceInsert.rows.length === 0) {
             continue;
         }
 
@@ -364,6 +350,171 @@ async function syncSkippedBookings(client, { userId = '', bookingDate = '', meal
             [booking.user_id]
         );
     }
+}
+
+function buildMealRecordFilters({ date = '', mealType = '', userId = '', monthKey = '', paymentStatus = '', hostelId = '', block = '' } = {}) {
+    const filters = ["mb.status <> 'cancelled'"];
+    const params = [];
+    let index = 1;
+
+    if (date) {
+        filters.push(`m.date = $${index++}`);
+        params.push(date);
+    }
+
+    if (mealType) {
+        filters.push(`m.meal_type = $${index++}`);
+        params.push(mealType);
+    }
+
+    if (userId) {
+        filters.push(`mb.user_id = $${index++}`);
+        params.push(userId);
+    }
+
+    if (monthKey) {
+        const { startDate, endDate } = getMonthDateRange(monthKey);
+        filters.push(`m.date >= $${index++}`);
+        params.push(startDate);
+        filters.push(`m.date <= $${index++}`);
+        params.push(endDate);
+    }
+
+    if (hostelId) {
+        filters.push(`up.hostel_id = $${index++}`);
+        params.push(hostelId);
+    }
+
+    if (block) {
+        filters.push(`LOWER(COALESCE(up.room_number, '')) LIKE $${index++}`);
+        params.push(`${String(block).toLowerCase()}%`);
+    }
+
+    if (paymentStatus) {
+        filters.push(`COALESCE(mb.payment_status, 'unpaid') = $${index++}`);
+        params.push(paymentStatus);
+    }
+
+    return { filters, params };
+}
+
+function getMealRecordsFromClause() {
+    return `
+        FROM meal_bookings mb
+        JOIN meals m ON m.id = mb.meal_id
+        JOIN user_profiles up ON up.id = mb.user_id
+        LEFT JOIN hostels h ON h.id = up.hostel_id
+    `;
+}
+
+async function queryMealRecords(client, filters = {}) {
+    const { filters: whereFilters, params } = buildMealRecordFilters(filters);
+    const result = await client.query(
+        `SELECT
+            mb.id AS booking_id,
+            mb.user_id,
+            up.full_name AS student_name,
+            up.email,
+            up.room_number,
+            up.hostel_id,
+            h.name AS hostel_name,
+            m.id AS meal_id,
+            m.date,
+            m.meal_type,
+            'booked'::text AS booking_status,
+            COALESCE(NULLIF(mb.attendance_status, ''), 'pending') AS attendance_status,
+            mb.checked_in_at AS scanned_at,
+            COALESCE(NULLIF(mb.original_price, 0), $${params.length + 1}) AS original_price,
+            COALESCE(NULLIF(mb.discounted_price, 0), COALESCE(NULLIF(mb.original_price, 0), $${params.length + 1})) AS discounted_price,
+            COALESCE(mb.reward_applied, false) AS reward_applied
+         ${getMealRecordsFromClause()}
+         WHERE ${whereFilters.join(' AND ')}
+         ORDER BY m.date DESC, m.meal_type ASC, up.full_name ASC`,
+        [...params, DEFAULT_MEAL_BASE_FEE]
+    );
+
+    return result.rows.map((row) => ({
+        id: row.booking_id,
+        booking_id: row.booking_id,
+        meal_id: row.meal_id,
+        user_id: row.user_id,
+        student_id: row.user_id,
+        name: row.student_name || 'Student',
+        student_name: row.student_name || 'Student',
+        email: row.email || '',
+        room_number: row.room_number || '',
+        hostel_id: row.hostel_id || null,
+        hostel_name: row.hostel_name || 'Unassigned',
+        block: row.room_number ? String(row.room_number).charAt(0).toUpperCase() : 'NA',
+        date: row.date,
+        meal_type: row.meal_type,
+        booking_status: row.booking_status,
+        attendance_status: row.attendance_status,
+        status: row.attendance_status,
+        scanned_at: row.scanned_at,
+        original_price: toNumber(row.original_price, DEFAULT_MEAL_BASE_FEE),
+        discounted_price: toNumber(row.discounted_price, DEFAULT_MEAL_BASE_FEE),
+        reward_applied: Boolean(row.reward_applied)
+    }));
+}
+
+function buildAttendanceBuckets(records = []) {
+    const presentUsers = records.filter((record) => record.attendance_status === 'present');
+    const absentUsers = records.filter((record) => ['pending', 'absent'].includes(record.attendance_status));
+
+    return {
+        total_present: presentUsers.length,
+        total_absent: absentUsers.length,
+        present_users: presentUsers,
+        absent_users: absentUsers,
+        records
+    };
+}
+
+function buildMealTotals(records = []) {
+    const mealsBooked = records.filter((record) => record.booking_status === 'booked').length;
+    const mealsAttended = records.filter((record) => record.attendance_status === 'present').length;
+    const mealsSkipped = records.filter((record) => record.attendance_status === 'absent').length;
+    const presentAbsentRatio = mealsBooked > 0
+        ? Number((mealsAttended / mealsBooked).toFixed(2))
+        : 0;
+
+    return {
+        meals_booked: mealsBooked,
+        meals_attended: mealsAttended,
+        meals_skipped: mealsSkipped,
+        present_absent_ratio: presentAbsentRatio,
+        attendance_rate: mealsBooked > 0 ? Number(((mealsAttended / mealsBooked) * 100).toFixed(1)) : 0
+    };
+}
+
+function buildBillingRow(records = [], settings, student = {}) {
+    const bookedMeals = records.length;
+    const attendedMeals = records.filter((record) => record.attendance_status === 'present').length;
+    const skippedMeals = records.filter((record) => record.attendance_status === 'absent').length;
+    const rewards = Number((attendedMeals * settings.reward_discount_per_meal).toFixed(2));
+    const penaltyCount = Math.floor(skippedMeals / settings.penalty_skip_threshold);
+    const penalties = Number((penaltyCount * settings.penalty_amount).toFixed(2));
+    const baseAmount = Number((bookedMeals * settings.meal_price).toFixed(2));
+    const finalAmount = Number((baseAmount - rewards + penalties).toFixed(2));
+    const paymentStatus = records.every((record) => record.payment_status === 'paid') && records.length > 0 ? 'paid' : 'unpaid';
+
+    return {
+        user_id: student.user_id || student.id || '',
+        student_name: student.student_name || student.name || 'Student',
+        email: student.email || '',
+        hostel_name: student.hostel_name || 'Unassigned',
+        block: student.block || 'NA',
+        total_booked_meals: bookedMeals,
+        attended_meals: attendedMeals,
+        skipped_meals: skippedMeals,
+        rewards,
+        penalties,
+        penalty_count: penaltyCount,
+        final_amount: finalAmount,
+        payment_status: paymentStatus,
+        base_amount: baseAmount
+    };
 }
 
 async function ensureMenuVotingTable() {
@@ -555,27 +706,15 @@ async function getBillingSettings(client = pool) {
 }
 
 async function computeMonthlyBill(client, { userId, monthKey }) {
-    const { startDate, endDate } = getMonthDateRange(monthKey);
     const settings = await getBillingSettings(client);
 
     await syncSkippedBookings(client, { userId });
 
-    const summaryRes = await client.query(
-        `SELECT COUNT(*)::int AS total_meals,
-                COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS attended_meals,
-                COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS skipped_meals
-         FROM meal_bookings mb
-         WHERE mb.user_id = $1
-           AND mb.booking_date >= $2
-           AND mb.booking_date <= $3
-           AND mb.status <> 'cancelled'`,
-        [userId, startDate, endDate]
-    );
-
-    const summary = summaryRes.rows[0] || {};
-    const totalMeals = Number(summary.total_meals) || 0;
-    const attendedMeals = Number(summary.attended_meals) || 0;
-    const skippedMeals = Number(summary.skipped_meals) || 0;
+    const records = await queryMealRecords(client, { userId, monthKey });
+    const totals = buildMealTotals(records);
+    const totalMeals = totals.meals_booked;
+    const attendedMeals = totals.meals_attended;
+    const skippedMeals = totals.meals_skipped;
     const penaltyCount = Math.floor(skippedMeals / settings.penalty_skip_threshold);
     const baseAmount = Number((totalMeals * settings.meal_price).toFixed(2));
     const rewards = Number((attendedMeals * settings.reward_discount_per_meal).toFixed(2));
@@ -757,7 +896,7 @@ app.get('/', (req, res) => {
     res.json({
         success: true,
         message: 'Backend is running'
-    });
+    })
 });
 
 app.get('/api/health', (req, res) => {
@@ -1487,137 +1626,120 @@ app.get('/api/meal-timings/current', async (req, res) => {
     }
 });
 
-// GET /api/generate-qr/:mealId - Generate attendance QR (mess manager / hostel admin only)
+async function generateAttendanceQrResponse({ mealType, date }) {
+    const normalizedMealType = normalizeMealType(mealType);
+    const normalizedDate = normalizeDateInput(date, getISTNow().dateString);
+
+    if (!normalizedMealType) {
+        throw new Error('Valid meal type is required');
+    }
+
+    const mealRes = await pool.query(
+        `SELECT id, meal_type, date, start_time, end_time
+         FROM meals
+         WHERE meal_type = $1 AND date = $2
+         ORDER BY start_time ASC
+         LIMIT 1`,
+        [normalizedMealType, normalizedDate]
+    );
+
+    if (mealRes.rows.length === 0) {
+        const error = new Error('Meal not found for selected date and meal type');
+        error.status = 404;
+        throw error;
+    }
+
+    const meal = mealRes.rows[0];
+    const canonicalTiming = getMealTimingForType(normalizedMealType);
+    const start = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
+    const end = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
+    const expiresAt = new Date(`${normalizedDate}T${end}:00+05:30`).toISOString();
+    const qrPayload = buildAttendanceQrPayload({
+        mealType: normalizedMealType,
+        date: normalizedDate,
+        expiresAt
+    });
+    const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
+    const currentIst = getISTNow();
+
+    return {
+        meal_id: meal.id,
+        meal_type: normalizedMealType,
+        date: normalizedDate,
+        expires_at: expiresAt,
+        qr_payload: qrPayload,
+        qr_image: qrImage,
+        status: currentIst.dateString === normalizedDate && isWithinMealTime(start, end).within ? 'active' : 'scheduled',
+        timing: {
+            start,
+            end,
+            start_display: formatTime12h(start),
+            end_display: formatTime12h(end)
+        }
+    };
+}
+
+app.post('/api/generate-qr', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
+    try {
+        const response = await generateAttendanceQrResponse({
+            mealType: req.body?.meal_type,
+            date: req.body?.date
+        });
+        return res.json(response);
+    } catch (error) {
+        console.error('Generate QR error:', error);
+        return res.status(error.status || 500).json({ error: error.message || 'Failed to generate QR' });
+    }
+});
+
 app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
         const mealId = String(req.params.mealId || '').trim();
-        const requestedUserId = String(req.query.user_id || '').trim();
         if (!mealId) {
             return res.status(400).json({ error: 'mealId is required' });
         }
 
         const mealRes = await pool.query(
-            "SELECT id, meal_type, date, start_time, end_time FROM meals WHERE id = $1",
+            "SELECT meal_type, date FROM meals WHERE id = $1 LIMIT 1",
             [mealId]
         );
+
         if (mealRes.rows.length === 0) {
             return res.status(404).json({ error: 'Meal not found' });
         }
 
-        const meal = mealRes.rows[0];
-        const mealType = normalizeMealType(meal.meal_type);
-
-        const canonicalTiming = getMealTimingForType(mealType);
-        const displayStart = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
-        const displayEnd = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
-
-        let qrToken = '';
-        let qrPayload = buildAttendanceQrPayload({ mealType, mealId });
-
-        if (requestedUserId) {
-            const bookingRes = await pool.query(
-                `SELECT id, user_id, booking_date, qr_token
-                 FROM meal_bookings
-                 WHERE meal_id = $1 AND user_id = $2`,
-                [mealId, requestedUserId]
-            );
-
-            if (bookingRes.rows.length === 0) {
-                return res.status(404).json({ error: 'No booking found for the selected user and meal' });
-            }
-
-            const booking = bookingRes.rows[0];
-            qrToken = booking.qr_token || buildBookingQrToken({
-                userId: booking.user_id,
-                mealId,
-                bookingDate: booking.booking_date,
-                mealType
-            });
-
-            if (!booking.qr_token) {
-                await pool.query(
-                    'UPDATE meal_bookings SET qr_token = $2, updated_at = NOW() WHERE id = $1',
-                    [booking.id, qrToken]
-                );
-            }
-
-            qrPayload = buildAttendanceQrPayload({
-                mealType,
-                mealId,
-                userId: booking.user_id,
-                qrToken
-            });
-        }
-
-        const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
-
-        console.log(`[QR] Generated for ${mealType} (${meal.id}) with payload ${qrPayload}`);
-
-        return res.json({
-            meal_id: meal.id,
-            meal_type: mealType,
-            user_id: requestedUserId || null,
-            qr_token: qrToken || null,
-            qr_image: qrImage,
-            timing: {
-                start: displayStart,
-                end: displayEnd,
-                start_display: formatTime12h(displayStart),
-                end_display: formatTime12h(displayEnd),
-            }
+        const response = await generateAttendanceQrResponse({
+            mealType: mealRes.rows[0].meal_type,
+            date: mealRes.rows[0].date
         });
+        return res.json(response);
     } catch (error) {
         console.error('Generate QR error:', error);
-        return res.status(500).json({ error: 'Failed to generate QR' });
+        return res.status(error.status || 500).json({ error: error.message || 'Failed to generate QR' });
     }
 });
 
-// POST /api/attendance - Scan and mark attendance (student only)
-app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req, res) => {
+async function handleAttendanceScan(req, res) {
     const client = await pool.connect();
     let transactionStarted = false;
     try {
         const body = req.body || {};
-        console.log('[Attendance] QR data received:', {
-            qr_data: body.qr_data,
-            meal_type: body.meal_type,
-            qr_token: body.qr_token
-        });
-
         const parsedQrData = parseAttendanceQrPayload(body.qr_data);
-        const parsedMealType = parseAttendanceQrPayload(body.meal_type);
-        const parsedQrToken = parseAttendanceQrPayload(body.qr_token);
-        const scannedMealType = parsedQrData.mealType || parsedMealType.mealType || parsedQrToken.mealType;
-        const scannedMealId = parsedQrData.mealId || parsedMealType.mealId || parsedQrToken.mealId;
-        const scannedUserId = parsedQrData.userId || parsedMealType.userId || parsedQrToken.userId;
-        const scannedQrToken = parsedQrData.qrToken || parsedMealType.qrToken || parsedQrToken.qrToken;
-
-        console.log('[Attendance] Raw scanned QR value:', parsedQrData.rawValue || parsedMealType.rawValue || parsedQrToken.rawValue);
-        console.log('[Attendance] Parsed QR data:', parsedQrData.parsedValue ?? parsedMealType.parsedValue ?? parsedQrToken.parsedValue ?? null);
-        console.log('[Attendance] Expected format:', ATTENDANCE_QR_EXPECTED_FORMAT);
+        const scannedMealType = parsedQrData.mealType || normalizeMealType(body.meal_type);
+        const scannedDate = normalizeDateInput(parsedQrData.date, getISTNow().dateString);
+        const scannedExpiresAt = String(parsedQrData.expiresAt || '').trim();
 
         if (!scannedMealType) {
             return res.status(400).json({ error: 'Invalid QR code' });
         }
 
-        if (scannedUserId && scannedUserId !== req.user.id) {
-            return res.status(403).json({ error: 'This attendance QR belongs to another user' });
+        if (scannedDate !== getISTNow().dateString) {
+            return res.status(400).json({ error: 'QR code is not valid for today' });
         }
 
-        const ist = getISTNow();
-        console.log(`[Attendance] Current IST: ${ist.dateString} ${ist.timeString}`);
-
-        const timingCheck = isWithinMealTime(
-            getMealTimingForType(scannedMealType)?.start || '',
-            getMealTimingForType(scannedMealType)?.end || ''
-        );
-        console.log('[Attendance] Meal validation result:', {
-            meal_type: scannedMealType,
-            within_window: timingCheck.within,
-            current_time: timingCheck.currentTime,
-            start_time: timingCheck.startTime,
-            end_time: timingCheck.endTime
-        });
+        if (scannedExpiresAt && Date.now() > Date.parse(scannedExpiresAt)) {
+            return res.status(400).json({ error: 'QR code has expired' });
+        }
 
         const mealRes = await client.query(
             `SELECT id, date, meal_type, start_time, end_time
@@ -1625,25 +1747,22 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
              WHERE meal_type = $1 AND date = $2
              ORDER BY start_time ASC
              LIMIT 1`,
-            [scannedMealType, ist.dateString]
+            [scannedMealType, scannedDate]
         );
         if (mealRes.rows.length === 0) {
-            return res.status(404).json({ error: 'No meal found for scanned meal type today' });
+            return res.status(404).json({ error: 'No meal found for scanned QR payload' });
         }
 
         const meal = mealRes.rows[0];
-        // IST-aware time window check using canonical shared meal timings
         const mealType = normalizeMealType(meal.meal_type) || scannedMealType;
         const canonicalTiming = getMealTimingForType(mealType) || getMealTimingForType(scannedMealType);
         const startTime = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
         const endTime = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
         const timeCheck = isWithinMealTime(startTime, endTime);
-        console.log(`[Attendance] IST time: ${timeCheck.currentTime}, meal window: ${timeCheck.startTime}-${timeCheck.endTime}, within: ${timeCheck.within}`);
-
         if (!timeCheck.within) {
             return res.status(400).json({
-                error: 'Meal time is over',
+                error: 'Scans are allowed only during the meal window',
                 detail: `Attendance is allowed from ${formatTime12h(startTime)} to ${formatTime12h(endTime)} IST`,
                 allowed_window: { start: startTime, end: endTime },
                 current_time_ist: timeCheck.currentTime
@@ -1669,56 +1788,16 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         }
 
         const booking = bookingRes.rows[0];
-        if (booking.status === 'skipped') {
+        if (booking.attendance_status === 'present') {
             await client.query('ROLLBACK');
             transactionStarted = false;
-            return res.status(409).json({ error: 'This booking was already marked absent' });
+            return res.status(409).json({ error: 'Attendance already marked' });
         }
 
-        if (scannedMealId && scannedMealId !== meal.id) {
+        if (booking.attendance_status === 'absent') {
             await client.query('ROLLBACK');
             transactionStarted = false;
-            return res.status(400).json({ error: 'QR code does not match this meal' });
-        }
-
-        if (scannedQrToken) {
-            const bookingToken = booking.qr_token || buildBookingQrToken({
-                userId: req.user.id,
-                mealId: meal.id,
-                bookingDate: booking.booking_date,
-                mealType
-            });
-
-            if (!booking.qr_token) {
-                await client.query(
-                    'UPDATE meal_bookings SET qr_token = $2, updated_at = NOW() WHERE id = $1',
-                    [booking.id, bookingToken]
-                );
-            }
-
-            if (scannedQrToken !== bookingToken) {
-                await client.query('ROLLBACK');
-                transactionStarted = false;
-                return res.status(400).json({ error: 'Invalid user-specific attendance QR' });
-            }
-        }
-
-        let attendance;
-        try {
-            const insertRes = await client.query(
-                `INSERT INTO attendance (user_id, meal_id, attendance_date, meal_type, status)
-                 VALUES ($1, $2, $3, $4, 'present')
-                 RETURNING id, scanned_at`,
-                [req.user.id, meal.id, meal.date, mealType]
-            );
-            attendance = insertRes.rows[0];
-        } catch (error) {
-            if (error.code === '23505') {
-                await client.query('ROLLBACK');
-                transactionStarted = false;
-                return res.status(409).json({ error: 'Attendance already marked' });
-            }
-            throw error;
+            return res.status(409).json({ error: 'Meal attendance window already closed for this booking' });
         }
 
         await client.query(
@@ -1770,7 +1849,9 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         return res.json({
             message: 'Attendance successfully recorded',
             attendance_status: 'present',
-            scanned_at: attendance.scanned_at,
+            scanned_at: new Date().toISOString(),
+            meal_type: mealType,
+            date: meal.date,
             rewards: {
                 points: Number(rewards.points) || 0,
                 total_meals: Number(rewards.total_meals) || 0,
@@ -1797,7 +1878,7 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
     } finally {
         client.release();
     }
-});
+}
 
 // GET /api/attendance - Role-aware attendance access
 app.get('/api/attendance', authMiddleware, async (req, res) => {
@@ -1826,123 +1907,51 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
             mealType
         });
 
-        const params = [];
-        const filters = [];
-        let index = 1;
+        let records = await queryMealRecords(pool, {
+            date: queryDate,
+            mealType,
+            userId: isAttendanceViewer(userRole) ? '' : req.user.id
+        });
 
-        if (queryDate) {
-            filters.push(`a.attendance_date = $${index++}`);
-            params.push(queryDate);
+        if (status === 'present') {
+            records = records.filter((record) => record.attendance_status === 'present');
         }
 
-        if (mealType) {
-            filters.push(`a.meal_type = $${index++}`);
-            params.push(mealType);
+        if (status === 'absent') {
+            records = records.filter((record) => ['pending', 'absent'].includes(record.attendance_status));
         }
 
-        if (status) {
-            filters.push(`a.status = $${index++}`);
-            params.push(status);
-        }
-
-        if (!isAttendanceViewer(userRole)) {
-            filters.push(`a.user_id = $${index++}`);
-            params.push(req.user.id);
-        }
-
-        const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-        const attendanceRes = await pool.query(
-            `SELECT a.id, a.user_id AS student_id, up.full_name AS student_name, up.email,
-                    a.attendance_date AS date, a.meal_type, a.status, a.scanned_at
-             FROM attendance a
-             JOIN user_profiles up ON up.id = a.user_id
-             ${whereClause}
-             ORDER BY up.full_name ASC, a.scanned_at DESC`,
-            params
-        );
-
-        const rows = attendanceRes.rows.map((row) => ({
-            id: row.id,
-            student_id: row.student_id,
-            name: row.student_name || 'Student',
-            email: row.email || '',
-            date: row.date,
-            meal_type: row.meal_type,
-            status: row.status,
-            scanned_at: row.scanned_at
-        }));
-
-        const presentRecords = rows.filter((row) => row.status === 'present');
-        const absentRecords = rows.filter((row) => row.status === 'absent');
-
-        const bookingFilters = ['mb.booking_date = $1'];
-        const bookingParams = [queryDate];
-        let bookingIndex = 2;
-
-        if (mealType) {
-            bookingFilters.push(`m.meal_type = $${bookingIndex++}`);
-            bookingParams.push(mealType);
-        }
-
-        if (!isAttendanceViewer(userRole)) {
-            bookingFilters.push(`mb.user_id = $${bookingIndex++}`);
-            bookingParams.push(req.user.id);
-        }
-
-        const bookingTotalsRes = await pool.query(
-            `SELECT COUNT(*)::int AS meals_booked,
-                    COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS meals_attended,
-                    COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS meals_skipped
-             FROM meal_bookings mb
-             JOIN meals m ON m.id = mb.meal_id
-             WHERE ${bookingFilters.join(' AND ')}`,
-            bookingParams
-        );
+        const buckets = buildAttendanceBuckets(records);
+        const totals = buildMealTotals(records);
 
         if (!isAttendanceViewer(userRole)) {
             return res.json({
-                total_present: presentRecords.length,
-                total_absent: absentRecords.length,
-                records: rows,
-                present_users: presentRecords,
-                absent_users: absentRecords,
-                totals: bookingTotalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
+                ...buckets,
+                totals
             });
         }
 
-        const analyticsParams = [queryDate];
-        let analyticsQuery = `
-            SELECT meal_type,
-                   COUNT(*) FILTER (WHERE status = 'present')::int AS total_present,
-                   COUNT(*) FILTER (WHERE status = 'absent')::int AS total_absent
-            FROM attendance
-            WHERE attendance_date = $1
-        `;
-
-        if (mealType) {
-            analyticsQuery += ' AND meal_type = $2';
-            analyticsParams.push(mealType);
-        }
-
-        analyticsQuery += ' GROUP BY meal_type ORDER BY meal_type';
-
-        const analyticsRes = await pool.query(analyticsQuery, analyticsParams);
+        const analytics = MEAL_ORDER.map((meal) => {
+            const mealRecords = records.filter((record) => record.meal_type === meal);
+            const mealBuckets = buildAttendanceBuckets(mealRecords);
+            return {
+                meal_type: meal,
+                total_present: mealBuckets.total_present,
+                total_absent: mealBuckets.total_absent
+            };
+        });
 
         return res.json({
-            total_present: presentRecords.length,
-            total_absent: absentRecords.length,
+            total_present: buckets.total_present,
+            total_absent: buckets.total_absent,
             date: queryDate,
             meal_type: mealType || null,
-            records: rows,
-            students: presentRecords,
-            present_users: presentRecords,
-            absent_users: absentRecords,
-            totals: bookingTotalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
-            analytics: analyticsRes.rows.map((row) => ({
-                meal_type: row.meal_type,
-                total_present: Number(row.total_present) || 0,
-                total_absent: Number(row.total_absent) || 0
-            }))
+            records,
+            students: buckets.present_users,
+            present_users: buckets.present_users,
+            absent_users: buckets.absent_users,
+            totals,
+            analytics
         });
     } catch (error) {
         console.error('Attendance listing error:', error);
@@ -1954,33 +1963,22 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
 app.get('/api/attendance/history', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
         await syncSkippedBookings(pool, { userId: req.user.id });
-        const historyRes = await pool.query(
-            `SELECT a.id, a.scanned_at, a.status, m.meal_type, mb.original_price, mb.discounted_price, mb.reward_applied
-             FROM attendance a
-             JOIN meals m ON a.meal_id = m.id
-             LEFT JOIN meal_bookings mb ON mb.user_id = a.user_id AND mb.meal_id = a.meal_id
-             WHERE a.user_id = $1
-             ORDER BY a.attendance_date DESC, a.scanned_at DESC`,
-            [req.user.id]
-        );
-        
-        const history = historyRes.rows.map(row => {
-            const dateObj = new Date(row.scanned_at);
-            const istStr = dateObj.toLocaleString('en-US', { timeZone: IST_TIMEZONE });
-            const istDate = new Date(istStr);
-            
-            const istDateStr = istDate.toLocaleDateString('en-CA'); // YYYY-MM-DD
-            const istTimeStr = istDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-            
+        const records = await queryMealRecords(pool, { userId: req.user.id });
+        const history = records.map((row) => {
+            const scannedAt = row.scanned_at ? new Date(row.scanned_at) : null;
+            const istTimeStr = scannedAt
+                ? scannedAt.toLocaleTimeString('en-IN', { timeZone: IST_TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false })
+                : '';
+
             return {
                 id: row.id,
-                date: istDateStr,
+                date: row.date,
                 meal: String(row.meal_type || 'meal'),
-                time: formatTime12h(istTimeStr),
-                status: row.status || 'present',
-                original_price: toNumber(row.original_price, DEFAULT_MEAL_BASE_FEE),
-                discounted_price: toNumber(row.discounted_price, DEFAULT_MEAL_BASE_FEE),
-                reward_applied: Boolean(row.reward_applied)
+                time: istTimeStr ? formatTime12h(istTimeStr) : 'Pending',
+                status: row.attendance_status || 'pending',
+                original_price: row.original_price,
+                discounted_price: row.discounted_price,
+                reward_applied: row.reward_applied
             };
         });
 
@@ -2545,6 +2543,9 @@ app.get('/api/billing/summary', authMiddleware, requireRole(['student']), async 
     }
 });
 
+app.post('/api/attendance', authMiddleware, requireRole(['student']), handleAttendanceScan);
+app.post('/api/scan-qr', authMiddleware, requireRole(['student']), handleAttendanceScan);
+
 app.post('/api/billing/pay', authMiddleware, requireRole(['student']), async (req, res) => {
     const client = await pool.connect();
     try {
@@ -2585,6 +2586,95 @@ app.post('/api/billing/pay', authMiddleware, requireRole(['student']), async (re
     }
 });
 
+async function getAllUsersBilling(client, { monthKey, paymentStatus = 'all', hostelId = '', block = '' } = {}) {
+    const settings = await getBillingSettings(client);
+    const studentsRes = await client.query(
+        `SELECT up.id, up.full_name AS student_name, up.email, up.room_number, h.name AS hostel_name, up.hostel_id
+         FROM user_profiles up
+         JOIN roles r ON up.role_id = r.id
+         LEFT JOIN hostels h ON h.id = up.hostel_id
+         WHERE up.is_active = true
+           AND LOWER(r.name) = 'student'
+           ${hostelId ? 'AND up.hostel_id = $1' : ''}
+         ORDER BY up.full_name ASC`,
+        hostelId ? [hostelId] : []
+    );
+
+    const billingRows = [];
+    for (const student of studentsRes.rows) {
+        if (block && !String(student.room_number || '').toLowerCase().startsWith(String(block).toLowerCase())) {
+            continue;
+        }
+
+        const bill = await upsertMonthlyBill(client, { userId: student.id, monthKey });
+        const billingRow = {
+            user_id: student.id,
+            student_name: student.student_name,
+            email: student.email || '',
+            hostel_name: student.hostel_name || 'Unassigned',
+            block: student.room_number ? String(student.room_number).charAt(0).toUpperCase() : 'NA',
+            total_booked_meals: Number(bill.total_meals) || 0,
+            attended_meals: Number(bill.attended_meals) || 0,
+            skipped_meals: Number(bill.skipped_meals) || 0,
+            rewards: toNumber(bill.rewards, 0),
+            penalties: toNumber(bill.penalties, 0),
+            penalty_count: Number(bill.penalty_count) || 0,
+            final_amount: toNumber(bill.final_amount, 0),
+            payment_status: bill.payment_status || 'unpaid',
+            base_amount: toNumber(bill.base_amount, 0)
+        };
+
+        if (paymentStatus !== 'all' && billingRow.payment_status !== paymentStatus) {
+            continue;
+        }
+
+        billingRows.push(billingRow);
+    }
+
+    const overview = billingRows.reduce((acc, row) => {
+        acc.total_students += 1;
+        acc.total_meals_booked += row.total_booked_meals;
+        acc.total_attended += row.attended_meals;
+        acc.total_skipped += row.skipped_meals;
+        acc.total_rewards_given += row.rewards;
+        acc.total_penalties_collected += row.penalties;
+        acc.total_revenue_expected += row.final_amount;
+        return acc;
+    }, {
+        total_students: 0,
+        total_meals_booked: 0,
+        total_attended: 0,
+        total_skipped: 0,
+        total_rewards_given: 0,
+        total_penalties_collected: 0,
+        total_revenue_expected: 0
+    });
+
+    return {
+        month: monthKey,
+        settings,
+        overview,
+        billing_rows: billingRows
+    };
+}
+
+app.get('/api/billing/all-users', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+        const paymentStatus = String(req.query.payment_status || 'all').trim().toLowerCase();
+        const hostelId = String(req.query.hostel_id || '').trim();
+        const block = String(req.query.block || '').trim().toLowerCase();
+        const payload = await getAllUsersBilling(client, { monthKey, paymentStatus, hostelId, block });
+        return res.json(payload);
+    } catch (error) {
+        console.error('Mess manager billing error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing dashboard' });
+    } finally {
+        client.release();
+    }
+});
+
 app.get('/api/mess-manager/billing', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     const client = await pool.connect();
     try {
@@ -2592,83 +2682,60 @@ app.get('/api/mess-manager/billing', authMiddleware, requireRole(['mess_manager'
         const paymentStatus = String(req.query.payment_status || 'all').trim().toLowerCase();
         const hostelId = String(req.query.hostel_id || '').trim();
         const block = String(req.query.block || '').trim().toLowerCase();
-        const { startDate, endDate } = getMonthDateRange(monthKey);
-
-        const studentsRes = await client.query(
-            `SELECT up.id, up.full_name AS name, up.email, up.room_number, up.hostel_id, h.name AS hostel_name
-             FROM user_profiles up
-             JOIN roles r ON up.role_id = r.id
-             LEFT JOIN hostels h ON up.hostel_id = h.id
-             WHERE up.is_active = true
-               AND LOWER(r.name) = 'student'
-               ${hostelId ? 'AND up.hostel_id = $1' : ''}
-             ORDER BY up.full_name ASC`,
-            hostelId ? [hostelId] : []
-        );
-
-        const billingRows = [];
-        for (const student of studentsRes.rows) {
-            if (block && !String(student.room_number || '').toLowerCase().startsWith(block)) {
-                continue;
-            }
-
-            const bill = await upsertMonthlyBill(client, { userId: student.id, monthKey });
-            if (paymentStatus !== 'all' && bill.payment_status !== paymentStatus) {
-                continue;
-            }
-
-            billingRows.push({
-                user_id: student.id,
-                name: student.name,
-                email: student.email,
-                hostel_name: student.hostel_name || 'Unassigned',
-                block: student.room_number ? String(student.room_number).charAt(0).toUpperCase() : 'NA',
-                total_bill: toNumber(bill.final_amount, 0),
-                payment_status: bill.payment_status || 'unpaid',
-                penalty_count: Number(bill.penalty_count) || 0,
-                rewards_earned: toNumber(bill.rewards, 0),
-                total_meals: Number(bill.total_meals) || 0
-            });
-        }
-
-        const totals = billingRows.reduce((acc, row) => {
-            acc.total_students += 1;
-            acc.total_revenue_expected += row.total_bill;
-            acc.total_rewards_given += row.rewards_earned;
-            acc.total_penalties_collected += row.penalty_count;
-            return acc;
-        }, {
-            total_students: 0,
-            total_revenue_expected: 0,
-            total_rewards_given: 0,
-            total_penalties_collected: 0
-        });
-
-        const aggregateMealsRes = await client.query(
-            `SELECT COUNT(*)::int AS total_meals_booked
-             FROM meal_bookings mb
-             JOIN user_profiles up ON up.id = mb.user_id
-             WHERE mb.booking_date >= $1
-               AND mb.booking_date <= $2
-               AND mb.status <> 'cancelled'
-               ${hostelId ? 'AND up.hostel_id = $3' : ''}`,
-            hostelId ? [startDate, endDate, hostelId] : [startDate, endDate]
-        );
-
-        return res.json({
-            month: monthKey,
-            overview: {
-                total_students: totals.total_students,
-                total_meals_booked: Number(aggregateMealsRes.rows[0]?.total_meals_booked) || 0,
-                total_revenue_expected: Number(totals.total_revenue_expected.toFixed(2)),
-                total_rewards_given: Number(totals.total_rewards_given.toFixed(2)),
-                total_penalties_collected: Number(totals.total_penalties_collected * (await getBillingSettings(client)).penalty_amount)
-            },
-            billing_rows: billingRows
-        });
+        const payload = await getAllUsersBilling(client, { monthKey, paymentStatus, hostelId, block });
+        return res.json(payload);
     } catch (error) {
         console.error('Mess manager billing error:', error);
         return res.status(500).json({ error: 'Failed to fetch billing dashboard' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/billing/user/:id', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin', 'student']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const requestedUserId = normalizeRole(req.user?.role) === 'student' ? req.user.id : String(req.params.id || '').trim();
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+
+        if (!requestedUserId) {
+            return res.status(400).json({ error: 'User id is required' });
+        }
+
+        const bill = await upsertMonthlyBill(client, { userId: requestedUserId, monthKey });
+        const userRes = await client.query(
+            `SELECT up.id, up.full_name AS student_name, up.email, up.room_number, h.name AS hostel_name
+             FROM user_profiles up
+             LEFT JOIN hostels h ON h.id = up.hostel_id
+             WHERE up.id = $1
+             LIMIT 1`,
+            [requestedUserId]
+        );
+
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        const user = userRes.rows[0];
+        return res.json({
+            user_id: requestedUserId,
+            student_name: user.student_name || 'Student',
+            email: user.email || '',
+            hostel_name: user.hostel_name || 'Unassigned',
+            block: user.room_number ? String(user.room_number).charAt(0).toUpperCase() : 'NA',
+            total_booked_meals: Number(bill.total_meals) || 0,
+            attended_meals: Number(bill.attended_meals) || 0,
+            skipped_meals: Number(bill.skipped_meals) || 0,
+            rewards: toNumber(bill.rewards, 0),
+            penalties: toNumber(bill.penalties, 0),
+            penalty_count: Number(bill.penalty_count) || 0,
+            final_amount: toNumber(bill.final_amount, 0),
+            payment_status: bill.payment_status || 'unpaid',
+            base_amount: toNumber(bill.base_amount, 0)
+        });
+    } catch (error) {
+        console.error('Billing user error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing details' });
     } finally {
         client.release();
     }
@@ -3798,22 +3865,38 @@ app.get('/api/admin/meal-governance/export', authMiddleware, requireRole(['super
     }
 });
 
-// GET /api/student/dashboard - Student summary card data
+async function getGlobalDashboardStats(client, filters = {}) {
+    await syncSkippedBookings(client, { bookingDate: filters.date || '', mealType: filters.mealType || '' });
+    const records = await queryMealRecords(client, filters);
+    const totals = buildMealTotals(records);
+    return {
+        total_meals_booked: totals.meals_booked,
+        total_attended: totals.meals_attended,
+        total_skipped: totals.meals_skipped,
+        present_absent_ratio: totals.present_absent_ratio,
+        attendance_rate: totals.attendance_rate
+    };
+}
+
+app.get('/api/dashboard/stats', authMiddleware, async (req, res) => {
+    try {
+        const date = normalizeDateInput(req.query.date, '');
+        const mealType = normalizeMealType(req.query.meal_type);
+        const stats = await getGlobalDashboardStats(pool, { date, mealType });
+        return res.json(stats);
+    } catch (error) {
+        console.error('Dashboard stats error:', error);
+        return res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+    }
+});
+
+// GET /api/student/dashboard - Student dashboard now exposes global meal metrics
 app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
         await syncSkippedBookings(pool, { userId: req.user.id });
-        const [bookingsRes, donationsRes, rewardRes] = await Promise.all([
-            pool.query(
-                `SELECT COUNT(*)::int AS meals_booked,
-                        COUNT(*) FILTER (WHERE status = 'attended')::int AS meals_attended,
-                        COUNT(*) FILTER (WHERE status = 'skipped')::int AS meals_skipped
-                 FROM meal_bookings
-                 WHERE user_id = $1 AND status <> 'cancelled'`,
-                [req.user.id]
-            ),
-            pool.query(
-                "SELECT COUNT(*)::int AS donations_count FROM donations WHERE status = 'completed'"
-            ),
+        const [globalStats, donationsRes, rewardRes] = await Promise.all([
+            getGlobalDashboardStats(pool),
+            pool.query("SELECT COUNT(*)::int AS donations_count FROM donations WHERE status = 'completed'"),
             pool.query(
                 `SELECT points, total_meals, total_rewards, skipped_meals_count, penalty_status, total_penalties, penalty_note
                  FROM student_rewards WHERE user_id = $1`,
@@ -3821,10 +3904,6 @@ app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), asyn
             )
         ]);
 
-        const mealsBooked = bookingsRes.rows[0]?.meals_booked || 0;
-        const mealsAttended = bookingsRes.rows[0]?.meals_attended || 0;
-        const mealsSkipped = bookingsRes.rows[0]?.meals_skipped || 0;
-        const attendanceRate = mealsBooked > 0 ? Number(((mealsAttended / mealsBooked) * 100).toFixed(1)) : 0;
         const reward = rewardRes.rows[0] || {
             points: 0,
             total_meals: 0,
@@ -3836,10 +3915,11 @@ app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), asyn
         };
 
         res.json({
-            meals_booked: mealsBooked,
-            meals_attended: mealsAttended,
-            meals_skipped: mealsSkipped,
-            attendance_rate: attendanceRate,
+            meals_booked: globalStats.total_meals_booked,
+            meals_attended: globalStats.total_attended,
+            meals_skipped: globalStats.total_skipped,
+            attendance_rate: globalStats.attendance_rate,
+            present_absent_ratio: globalStats.present_absent_ratio,
             donations_completed: donationsRes.rows[0]?.donations_count || 0,
             reward_summary: {
                 points: Number(reward.points) || 0,
@@ -3865,84 +3945,52 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
     try {
         const today = getISTNow().dateString;
         await syncSkippedBookings(pool, { bookingDate: today });
-        const [bookingsRes, expectedRes, lowStockRes, wastageRes, alertsRes, attendanceRes, attendanceByMealRes] = await Promise.all([
-            pool.query("SELECT COUNT(*)::int AS total_bookings FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status <> 'cancelled'"),
-            pool.query("SELECT COUNT(*)::int AS expected_attendance FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status IN ('booked', 'attended', 'skipped')"),
+        const [todayRecords, globalStats, lowStockRes, wastageRes, alertsRes, penaltyRes, rewardRes] = await Promise.all([
+            queryMealRecords(pool, { date: today }),
+            getGlobalDashboardStats(pool),
             pool.query("SELECT COUNT(*)::int AS low_stock_items FROM inventory WHERE is_active = true AND quantity <= reorder_level"),
             pool.query("SELECT ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS today_wastage FROM wastage_logs WHERE date = CURRENT_DATE"),
             pool.query(
                 "SELECT id, item_name, quantity, reorder_level FROM inventory " +
                 "WHERE is_active = true AND quantity <= reorder_level ORDER BY quantity ASC LIMIT 5"
             ),
-            pool.query(
-                `SELECT a.user_id AS student_id, up.full_name AS name, a.meal_type, a.scanned_at
-                 FROM attendance a
-                 JOIN user_profiles up ON up.id = a.user_id
-                 WHERE a.attendance_date = $1 AND a.status = 'present'
-                 ORDER BY a.scanned_at DESC, up.full_name ASC`,
-                [today]
-            ),
-            pool.query(
-                `SELECT meal_type, COUNT(*)::int AS total_present
-                 FROM attendance
-                 WHERE attendance_date = $1 AND status = 'present'
-                 GROUP BY meal_type
-                 ORDER BY meal_type`,
-                [today]
-            )
+            pool.query(`SELECT COUNT(*)::int AS total_penalties FROM student_rewards WHERE penalty_status = 'penalty'`),
+            pool.query(`SELECT COALESCE(SUM(total_rewards), 0)::int AS total_rewards FROM student_rewards`)
         ]);
 
-        const [absentRes, totalsRes, penaltyRes, rewardRes] = await Promise.all([
-            pool.query(
-                `SELECT a.user_id AS student_id, up.full_name AS name, a.meal_type, a.scanned_at
-                 FROM attendance a
-                 JOIN user_profiles up ON up.id = a.user_id
-                 WHERE a.attendance_date = $1 AND a.status = 'absent'
-                 ORDER BY up.full_name ASC`,
-                [today]
-            ),
-            pool.query(
-                `SELECT COUNT(*)::int AS meals_booked,
-                        COUNT(*) FILTER (WHERE status = 'attended')::int AS meals_attended,
-                        COUNT(*) FILTER (WHERE status = 'skipped')::int AS meals_skipped
-                 FROM meal_bookings
-                 WHERE booking_date = $1 AND status <> 'cancelled'`,
-                [today]
-            ),
-            pool.query(
-                `SELECT COUNT(*)::int AS total_penalties
-                 FROM student_rewards
-                 WHERE penalty_status = 'penalty'`
-            ),
-            pool.query(
-                `SELECT COALESCE(SUM(total_rewards), 0)::int AS total_rewards
-                 FROM student_rewards`
-            )
-        ]);
+        const attendanceBuckets = buildAttendanceBuckets(todayRecords);
+        const todayTotals = buildMealTotals(todayRecords);
+        const totalsByMeal = MEAL_ORDER.map((meal) => {
+            const mealRecords = todayRecords.filter((record) => record.meal_type === meal);
+            const mealBuckets = buildAttendanceBuckets(mealRecords);
+            return {
+                meal_type: meal,
+                total_present: mealBuckets.total_present,
+                total_absent: mealBuckets.total_absent
+            };
+        });
 
         res.json({
             stats: {
-                total_bookings: bookingsRes.rows[0]?.total_bookings || 0,
-                expected_attendance: expectedRes.rows[0]?.expected_attendance || 0,
+                total_bookings: globalStats.total_meals_booked,
+                expected_attendance: todayTotals.meals_booked,
                 low_stock_items: lowStockRes.rows[0]?.low_stock_items || 0,
                 today_wastage: wastageRes.rows[0]?.today_wastage || 0,
-                meals_attended: totalsRes.rows[0]?.meals_attended || 0,
-                meals_skipped: totalsRes.rows[0]?.meals_skipped || 0,
+                meals_attended: globalStats.total_attended,
+                meals_skipped: globalStats.total_skipped,
                 total_penalties: penaltyRes.rows[0]?.total_penalties || 0,
-                total_rewards: rewardRes.rows[0]?.total_rewards || 0
+                total_rewards: rewardRes.rows[0]?.total_rewards || 0,
+                present_absent_ratio: globalStats.present_absent_ratio
             },
             attendance: {
                 date: today,
-                total_present: attendanceRes.rows.length,
-                total_absent: absentRes.rows.length,
-                students: attendanceRes.rows,
-                present_users: attendanceRes.rows,
-                absent_users: absentRes.rows,
-                totals_by_meal: attendanceByMealRes.rows.map((row) => ({
-                    meal_type: row.meal_type,
-                    total_present: Number(row.total_present) || 0
-                })),
-                totals: totalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
+                total_present: attendanceBuckets.total_present,
+                total_absent: attendanceBuckets.total_absent,
+                students: attendanceBuckets.present_users,
+                present_users: attendanceBuckets.present_users,
+                absent_users: attendanceBuckets.absent_users,
+                totals_by_meal: totalsByMeal,
+                totals: todayTotals
             },
             alerts: alertsRes.rows.map((r) => ({
                 id: r.id,
