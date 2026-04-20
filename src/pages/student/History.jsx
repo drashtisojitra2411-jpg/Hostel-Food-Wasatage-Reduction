@@ -21,7 +21,7 @@ export default function History() {
 
             const formattedHistory = (data || []).map(booking => {
                 let statusConfig = {
-                    label: 'CONFIRMED',
+                    label: 'BOOKED',
                     class: 'border-creative-lime/30 text-creative-lime bg-creative-lime/5'
                 };
 
@@ -30,21 +30,22 @@ export default function History() {
                         label: 'CANCELLED',
                         class: 'border-white/10 text-white/40 bg-white/5'
                     };
-                } else if (booking.status === 'consumed') {
+                } else if (booking.status === 'attended') {
                     statusConfig = {
-                        label: 'CONSUMED',
+                        label: 'ATTENDED',
                         class: 'border-creative-purple/30 text-creative-purple bg-creative-purple/5'
                     };
-                } else if (booking.status === 'no_show') {
+                } else if (booking.status === 'skipped') {
                     statusConfig = {
-                        label: 'MISSED',
+                        label: 'SKIPPED',
                         class: 'border-red-500/30 text-red-500 bg-red-500/5'
                     };
                 }
 
-                let impactText = '0.50 KG SAVED';
+                let impactText = `₹${booking.discounted_price || booking.original_price || 100}`;
                 if (booking.status === 'cancelled') impactText = 'NO DEVIATION';
-                if (booking.status === 'no_show') impactText = 'WASTAGE LOGGED';
+                if (booking.status === 'skipped') impactText = 'PENALTY RISK';
+                if (booking.reward_applied) impactText = `₹${booking.discounted_price || 90} REWARDED`;
 
                 let dateStr = '00.00.0000';
                 try {

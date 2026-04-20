@@ -93,7 +93,12 @@ CREATE TABLE IF NOT EXISTS meal_bookings (
     user_id UUID REFERENCES user_profiles(id) ON DELETE CASCADE,
     meal_id UUID REFERENCES meals(id) ON DELETE CASCADE,
     booking_date DATE NOT NULL,
-    status VARCHAR(20) DEFAULT 'confirmed', -- pending, confirmed, cancelled, consumed, no_show
+    status VARCHAR(20) DEFAULT 'booked', -- booked, attended, skipped, cancelled
+    original_price NUMERIC(10, 2) NOT NULL DEFAULT 100,
+    discounted_price NUMERIC(10, 2) NOT NULL DEFAULT 100,
+    reward_applied BOOLEAN NOT NULL DEFAULT false,
+    attendance_status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, present, absent
+    qr_token TEXT,
     is_auto_booked BOOLEAN DEFAULT false,
     cancelled_at TIMESTAMPTZ,
     cancellation_reason TEXT,
@@ -114,6 +119,71 @@ CREATE TABLE IF NOT EXISTS menu_votes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, week_start, day, meal_type)
+);
+
+CREATE TABLE IF NOT EXISTS student_rewards (
+    user_id UUID PRIMARY KEY REFERENCES user_profiles(id) ON DELETE CASCADE,
+    points INTEGER NOT NULL DEFAULT 0 CHECK (points >= 0),
+    total_meals INTEGER NOT NULL DEFAULT 0 CHECK (total_meals >= 0),
+    total_rewards INTEGER NOT NULL DEFAULT 0 CHECK (total_rewards >= 0),
+    skipped_meals_count INTEGER NOT NULL DEFAULT 0 CHECK (skipped_meals_count >= 0),
+    penalty_status VARCHAR(20) NOT NULL DEFAULT 'clear',
+    total_penalties INTEGER NOT NULL DEFAULT 0 CHECK (total_penalties >= 0),
+    penalty_note TEXT,
+    last_penalty_at TIMESTAMPTZ,
+    last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS attendance (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+    meal_id UUID NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+    scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    qr_token_id TEXT,
+    attendance_date DATE,
+    meal_type VARCHAR(20),
+    status VARCHAR(20) NOT NULL DEFAULT 'present',
+    UNIQUE(user_id, meal_id)
+);
+
+CREATE TABLE IF NOT EXISTS billing_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    meal_price NUMERIC(10, 2) NOT NULL DEFAULT 100,
+    reward_discount_per_meal NUMERIC(10, 2) NOT NULL DEFAULT 10,
+    penalty_amount NUMERIC(10, 2) NOT NULL DEFAULT 50,
+    penalty_skip_threshold INTEGER NOT NULL DEFAULT 4,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by UUID REFERENCES user_profiles(id)
+);
+
+CREATE TABLE IF NOT EXISTS monthly_billing (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+    billing_month VARCHAR(7) NOT NULL,
+    total_meals INTEGER NOT NULL DEFAULT 0,
+    attended_meals INTEGER NOT NULL DEFAULT 0,
+    skipped_meals INTEGER NOT NULL DEFAULT 0,
+    base_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    rewards NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    penalty_count INTEGER NOT NULL DEFAULT 0,
+    penalties NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    final_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+    paid_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, billing_month)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+    billing_id UUID REFERENCES monthly_billing(id) ON DELETE SET NULL,
+    amount NUMERIC(10, 2) NOT NULL,
+    payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payment_method VARCHAR(50) NOT NULL DEFAULT 'demo_gateway',
+    transaction_id TEXT NOT NULL UNIQUE,
+    status VARCHAR(20) NOT NULL DEFAULT 'paid',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Booking preferences for auto-booking

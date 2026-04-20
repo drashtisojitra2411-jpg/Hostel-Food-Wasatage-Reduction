@@ -202,6 +202,11 @@ export default function MealBooking() {
                                                     <span className="text-xs font-black italic text-creative-purple">{meal.protein}P</span>
                                                 </div>
                                             </div>
+                                            <div className="mt-4 rounded-2xl border border-creative-lime/20 bg-creative-lime/5 px-4 py-3">
+                                                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40">Fixed Meal Price</p>
+                                                <p className="mt-2 text-2xl font-black text-creative-lime">₹100</p>
+                                                <p className="text-xs text-white/45 mt-1">Booked and attended meals are billed at ₹90 after the 10% reward.</p>
+                                            </div>
                                         </div>
 
                                         <Button

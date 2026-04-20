@@ -49,6 +49,7 @@ app.use(cors({
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
+const GENERIC_ERROR_MESSAGE = 'Something went wrong. Please try again.';
 
 // ─── Database Connection ────────────────────────────────────────────────────
 const pool = new pg.Pool({
@@ -58,7 +59,12 @@ const pool = new pg.Pool({
 
 const MENU_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MENU_MEALS = ['breakfast', 'lunch', 'dinner'];
-const DEFAULT_MEAL_BASE_FEE = 120;
+const DEFAULT_MEAL_BASE_FEE = 100;
+const REWARD_DISCOUNT_PERCENT = 10;
+const REWARD_DISCOUNT_AMOUNT = 10;
+const REWARDED_MEAL_FEE = DEFAULT_MEAL_BASE_FEE - REWARD_DISCOUNT_AMOUNT;
+const PENALTY_SKIP_THRESHOLD = 4;
+const DEFAULT_PENALTY_AMOUNT = 50;
 const DEFAULT_MENU_OPTIONS = {
     Monday: {
         breakfast: ['Poha', 'Upma', 'Sandwich', 'Idli Sambar'],
@@ -126,16 +132,30 @@ function isAttendanceViewer(role) {
 
 function normalizeAttendanceStatus(status) {
     const value = String(status || '').trim().toLowerCase();
-    if (value === 'present' || value === 'absent') {
+    if (value === 'present' || value === 'absent' || value === 'all') {
         return value;
     }
     return '';
+}
+
+function normalizePenaltyStatus(status) {
+    const value = String(status || '').trim().toLowerCase();
+    if (value === 'clear' || value === 'warning' || value === 'penalty') {
+        return value;
+    }
+    return 'clear';
 }
 
 function normalizeDateInput(value, fallback = '') {
     const raw = String(value || '').trim();
     if (!raw) return fallback;
     return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+}
+
+function normalizeMonthInput(value, fallback = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return fallback;
+    return /^\d{4}-\d{2}$/.test(raw) ? raw : '';
 }
 
 function toNumber(value, fallback = 0) {
@@ -201,6 +221,151 @@ function formatTime12h(timeStr) {
     return `${h12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
+function hasMealWindowEnded(mealDate, endTime, reference = getISTNow()) {
+    if (!mealDate || !endTime) return false;
+
+    if (mealDate < reference.dateString) {
+        return true;
+    }
+
+    if (mealDate > reference.dateString) {
+        return false;
+    }
+
+    return timeToMinutes(endTime) < (reference.hours * 60 + reference.minutes);
+}
+
+function buildBookingQrToken({ userId, mealId, bookingDate, mealType }) {
+    return [userId, mealId, bookingDate, mealType].filter(Boolean).join(':');
+}
+
+function buildFeePreview({ rewardApplied = false } = {}) {
+    return {
+        base_fee: DEFAULT_MEAL_BASE_FEE,
+        discount_percent: rewardApplied ? REWARD_DISCOUNT_PERCENT : 0,
+        effective_fee: rewardApplied ? REWARDED_MEAL_FEE : DEFAULT_MEAL_BASE_FEE
+    };
+}
+
+function getCurrentMonthKey() {
+    return getISTNow().dateString.slice(0, 7);
+}
+
+function getMonthDateRange(monthKey = getCurrentMonthKey()) {
+    const normalized = normalizeMonthInput(monthKey, getCurrentMonthKey());
+    const [year, month] = normalized.split('-').map(Number);
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 0));
+    const startDate = start.toISOString().slice(0, 10);
+    const endDate = end.toISOString().slice(0, 10);
+    return { monthKey: normalized, startDate, endDate, month: month - 1, year };
+}
+
+async function syncSkippedBookings(client, { userId = '', bookingDate = '', mealType = '' } = {}) {
+    const reference = getISTNow();
+    const params = [];
+    const filters = [
+        "mb.status IN ('confirmed', 'booked')",
+        "COALESCE(mb.attendance_status, 'pending') <> 'present'",
+        'a.id IS NULL'
+    ];
+    let index = 1;
+
+    if (userId) {
+        filters.push(`mb.user_id = $${index++}`);
+        params.push(userId);
+    }
+
+    if (bookingDate) {
+        filters.push(`m.date = $${index++}`);
+        params.push(bookingDate);
+    }
+
+    if (mealType) {
+        filters.push(`m.meal_type = $${index++}`);
+        params.push(mealType);
+    }
+
+    const skippedCandidates = await client.query(
+        `SELECT mb.id AS booking_id,
+                mb.user_id,
+                mb.meal_id,
+                m.date,
+                m.meal_type,
+                COALESCE(NULLIF(mb.original_price, 0), $${index++}) AS original_price,
+                COALESCE(mt.end_time::text, m.end_time::text) AS end_time
+         FROM meal_bookings mb
+         JOIN meals m ON m.id = mb.meal_id
+         LEFT JOIN meal_timings mt ON mt.meal_name = m.meal_type
+         LEFT JOIN attendance a ON a.user_id = mb.user_id AND a.meal_id = mb.meal_id
+         WHERE ${filters.join(' AND ')}`,
+        [...params, DEFAULT_MEAL_BASE_FEE]
+    );
+
+    for (const booking of skippedCandidates.rows) {
+        const endTime = String(booking.end_time || '').slice(0, 5);
+        if (!hasMealWindowEnded(booking.date, endTime, reference)) {
+            continue;
+        }
+
+        const attendanceInsert = await client.query(
+            `INSERT INTO attendance (user_id, meal_id, attendance_date, meal_type, status)
+             VALUES ($1, $2, $3, $4, 'absent')
+             ON CONFLICT (user_id, attendance_date, meal_type) DO NOTHING
+             RETURNING id`,
+            [booking.user_id, booking.meal_id, booking.date, normalizeMealType(booking.meal_type)]
+        );
+
+        if (attendanceInsert.rows.length === 0) {
+            continue;
+        }
+
+        await client.query(
+            `UPDATE meal_bookings
+             SET status = 'skipped',
+                 attendance_status = 'absent',
+                 discounted_price = COALESCE(NULLIF(original_price, 0), $2),
+                 reward_applied = false,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [booking.booking_id, DEFAULT_MEAL_BASE_FEE]
+        );
+
+        await client.query(
+            `INSERT INTO student_rewards (
+                user_id, points, total_meals, total_rewards, skipped_meals_count,
+                penalty_status, total_penalties, penalty_note, last_updated
+             )
+             VALUES ($1, 0, 0, 0, 1, 'warning', 0, 'Skipping meals may trigger a penalty after 4 absences.', NOW())
+             ON CONFLICT (user_id)
+             DO UPDATE SET
+                skipped_meals_count = CASE
+                    WHEN student_rewards.skipped_meals_count + 1 >= ${PENALTY_SKIP_THRESHOLD} THEN 0
+                    ELSE student_rewards.skipped_meals_count + 1
+                END,
+                penalty_status = CASE
+                    WHEN student_rewards.skipped_meals_count + 1 >= ${PENALTY_SKIP_THRESHOLD} THEN 'penalty'
+                    WHEN student_rewards.skipped_meals_count + 1 > 0 THEN 'warning'
+                    ELSE 'clear'
+                END,
+                total_penalties = CASE
+                    WHEN student_rewards.skipped_meals_count + 1 >= ${PENALTY_SKIP_THRESHOLD} THEN student_rewards.total_penalties + 1
+                    ELSE student_rewards.total_penalties
+                END,
+                last_penalty_at = CASE
+                    WHEN student_rewards.skipped_meals_count + 1 >= ${PENALTY_SKIP_THRESHOLD} THEN NOW()
+                    ELSE student_rewards.last_penalty_at
+                END,
+                penalty_note = CASE
+                    WHEN student_rewards.skipped_meals_count + 1 >= ${PENALTY_SKIP_THRESHOLD} THEN 'Penalty applied after 4 skipped booked meals.'
+                    ELSE 'Skipping meals may trigger a penalty after 4 absences.'
+                END,
+                last_updated = NOW()`,
+            [booking.user_id]
+        );
+    }
+}
+
 async function ensureMenuVotingTable() {
     await pool.query(
         `CREATE TABLE IF NOT EXISTS menu_votes (
@@ -226,6 +391,12 @@ async function ensureAttendanceTables() {
             user_id UUID PRIMARY KEY REFERENCES user_profiles(id) ON DELETE CASCADE,
             points INTEGER NOT NULL DEFAULT 0 CHECK (points >= 0),
             total_meals INTEGER NOT NULL DEFAULT 0 CHECK (total_meals >= 0),
+            total_rewards INTEGER NOT NULL DEFAULT 0 CHECK (total_rewards >= 0),
+            skipped_meals_count INTEGER NOT NULL DEFAULT 0 CHECK (skipped_meals_count >= 0),
+            penalty_status VARCHAR(20) NOT NULL DEFAULT 'clear',
+            total_penalties INTEGER NOT NULL DEFAULT 0 CHECK (total_penalties >= 0),
+            penalty_note TEXT,
+            last_penalty_at TIMESTAMPTZ,
             last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`
     );
@@ -269,6 +440,30 @@ async function ensureAttendanceTables() {
     await pool.query('ALTER TABLE attendance ADD COLUMN IF NOT EXISTS attendance_date DATE');
     await pool.query('ALTER TABLE attendance ADD COLUMN IF NOT EXISTS meal_type VARCHAR(20)');
     await pool.query("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'present'");
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS total_rewards INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS skipped_meals_count INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS penalty_status VARCHAR(20) NOT NULL DEFAULT 'clear'`);
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS total_penalties INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS penalty_note TEXT`);
+    await pool.query(`ALTER TABLE student_rewards ADD COLUMN IF NOT EXISTS last_penalty_at TIMESTAMPTZ`);
+    await pool.query(`UPDATE student_rewards SET penalty_status = COALESCE(NULLIF(penalty_status, ''), 'clear')`);
+    await pool.query(`ALTER TABLE meal_bookings ADD COLUMN IF NOT EXISTS original_price NUMERIC(10, 2) NOT NULL DEFAULT 100`);
+    await pool.query(`ALTER TABLE meal_bookings ADD COLUMN IF NOT EXISTS discounted_price NUMERIC(10, 2) NOT NULL DEFAULT 100`);
+    await pool.query(`ALTER TABLE meal_bookings ADD COLUMN IF NOT EXISTS reward_applied BOOLEAN NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE meal_bookings ADD COLUMN IF NOT EXISTS attendance_status VARCHAR(20) NOT NULL DEFAULT 'pending'`);
+    await pool.query(`ALTER TABLE meal_bookings ADD COLUMN IF NOT EXISTS qr_token TEXT`);
+    await pool.query(`UPDATE meal_bookings SET original_price = COALESCE(NULLIF(original_price, 0), 100), discounted_price = COALESCE(NULLIF(discounted_price, 0), COALESCE(NULLIF(original_price, 0), 100))`);
+    await pool.query(`UPDATE meal_bookings SET attendance_status = CASE
+        WHEN status IN ('consumed', 'attended') THEN 'present'
+        WHEN status IN ('no_show', 'skipped') THEN 'absent'
+        ELSE COALESCE(NULLIF(attendance_status, ''), 'pending')
+    END`);
+    await pool.query(`UPDATE meal_bookings SET status = CASE
+        WHEN status = 'confirmed' THEN 'booked'
+        WHEN status = 'consumed' THEN 'attended'
+        WHEN status = 'no_show' THEN 'skipped'
+        ELSE status
+    END`);
     await pool.query(
         `UPDATE attendance a
          SET attendance_date = COALESCE(a.attendance_date, m.date),
@@ -281,7 +476,177 @@ async function ensureAttendanceTables() {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_attendance_date_meal ON attendance(attendance_date, meal_type)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, attendance_date DESC)');
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_user_date_meal ON attendance(user_id, attendance_date, meal_type)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_meal_bookings_date_type ON meal_bookings(booking_date, attendance_status)');
     console.log('[MealTimings] Canonical timings synced');
+}
+
+async function ensureBillingTables() {
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS billing_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            meal_price NUMERIC(10, 2) NOT NULL DEFAULT 100,
+            reward_discount_per_meal NUMERIC(10, 2) NOT NULL DEFAULT 10,
+            penalty_amount NUMERIC(10, 2) NOT NULL DEFAULT 50,
+            penalty_skip_threshold INTEGER NOT NULL DEFAULT 4,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by UUID REFERENCES user_profiles(id)
+        )`
+    );
+
+    await pool.query(
+        `INSERT INTO billing_settings (id, meal_price, reward_discount_per_meal, penalty_amount, penalty_skip_threshold)
+         VALUES (1, $1, $2, $3, $4)
+         ON CONFLICT (id) DO NOTHING`,
+        [DEFAULT_MEAL_BASE_FEE, REWARD_DISCOUNT_AMOUNT, DEFAULT_PENALTY_AMOUNT, PENALTY_SKIP_THRESHOLD]
+    );
+
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS monthly_billing (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+            billing_month VARCHAR(7) NOT NULL,
+            total_meals INTEGER NOT NULL DEFAULT 0,
+            attended_meals INTEGER NOT NULL DEFAULT 0,
+            skipped_meals INTEGER NOT NULL DEFAULT 0,
+            base_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            rewards NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            penalty_count INTEGER NOT NULL DEFAULT 0,
+            penalties NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            final_amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+            paid_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(user_id, billing_month)
+        )`
+    );
+
+    await pool.query(
+        `CREATE TABLE IF NOT EXISTS payments (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+            billing_id UUID REFERENCES monthly_billing(id) ON DELETE SET NULL,
+            amount NUMERIC(10, 2) NOT NULL,
+            payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            payment_method VARCHAR(50) NOT NULL DEFAULT 'demo_gateway',
+            transaction_id TEXT NOT NULL UNIQUE,
+            status VARCHAR(20) NOT NULL DEFAULT 'paid',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_monthly_billing_month_status ON monthly_billing(billing_month, payment_status)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_payments_user_date ON payments(user_id, payment_date DESC)');
+}
+
+async function getBillingSettings(client = pool) {
+    const settingsRes = await client.query(
+        `SELECT meal_price, reward_discount_per_meal, penalty_amount, penalty_skip_threshold
+         FROM billing_settings
+         WHERE id = 1`
+    );
+
+    const row = settingsRes.rows[0] || {};
+    return {
+        meal_price: toNumber(row.meal_price, DEFAULT_MEAL_BASE_FEE),
+        reward_discount_per_meal: toNumber(row.reward_discount_per_meal, REWARD_DISCOUNT_AMOUNT),
+        penalty_amount: toNumber(row.penalty_amount, DEFAULT_PENALTY_AMOUNT),
+        penalty_skip_threshold: Math.max(1, parseInt(row.penalty_skip_threshold || PENALTY_SKIP_THRESHOLD, 10))
+    };
+}
+
+async function computeMonthlyBill(client, { userId, monthKey }) {
+    const { startDate, endDate } = getMonthDateRange(monthKey);
+    const settings = await getBillingSettings(client);
+
+    await syncSkippedBookings(client, { userId });
+
+    const summaryRes = await client.query(
+        `SELECT COUNT(*)::int AS total_meals,
+                COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS attended_meals,
+                COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS skipped_meals
+         FROM meal_bookings mb
+         WHERE mb.user_id = $1
+           AND mb.booking_date >= $2
+           AND mb.booking_date <= $3
+           AND mb.status <> 'cancelled'`,
+        [userId, startDate, endDate]
+    );
+
+    const summary = summaryRes.rows[0] || {};
+    const totalMeals = Number(summary.total_meals) || 0;
+    const attendedMeals = Number(summary.attended_meals) || 0;
+    const skippedMeals = Number(summary.skipped_meals) || 0;
+    const penaltyCount = Math.floor(skippedMeals / settings.penalty_skip_threshold);
+    const baseAmount = Number((totalMeals * settings.meal_price).toFixed(2));
+    const rewards = Number((attendedMeals * settings.reward_discount_per_meal).toFixed(2));
+    const penalties = Number((penaltyCount * settings.penalty_amount).toFixed(2));
+    const finalAmount = Number((baseAmount - rewards + penalties).toFixed(2));
+
+    return {
+        month: monthKey,
+        total_meals: totalMeals,
+        attended_meals: attendedMeals,
+        skipped_meals: skippedMeals,
+        base_amount: baseAmount,
+        rewards,
+        penalty_count: penaltyCount,
+        penalties,
+        final_amount: finalAmount,
+        settings
+    };
+}
+
+async function upsertMonthlyBill(client, { userId, monthKey }) {
+    const computed = await computeMonthlyBill(client, { userId, monthKey });
+    const existingRes = await client.query(
+        `SELECT id, payment_status, paid_at
+         FROM monthly_billing
+         WHERE user_id = $1 AND billing_month = $2`,
+        [userId, monthKey]
+    );
+    const existing = existingRes.rows[0];
+
+    const upsertRes = await client.query(
+        `INSERT INTO monthly_billing (
+            user_id, billing_month, total_meals, attended_meals, skipped_meals,
+            base_amount, rewards, penalty_count, penalties, final_amount,
+            payment_status, paid_at, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 'unpaid'), $12, NOW())
+         ON CONFLICT (user_id, billing_month)
+         DO UPDATE SET
+            total_meals = EXCLUDED.total_meals,
+            attended_meals = EXCLUDED.attended_meals,
+            skipped_meals = EXCLUDED.skipped_meals,
+            base_amount = EXCLUDED.base_amount,
+            rewards = EXCLUDED.rewards,
+            penalty_count = EXCLUDED.penalty_count,
+            penalties = EXCLUDED.penalties,
+            final_amount = EXCLUDED.final_amount,
+            payment_status = COALESCE(monthly_billing.payment_status, EXCLUDED.payment_status),
+            paid_at = monthly_billing.paid_at,
+            updated_at = NOW()
+         RETURNING *`,
+        [
+            userId,
+            monthKey,
+            computed.total_meals,
+            computed.attended_meals,
+            computed.skipped_meals,
+            computed.base_amount,
+            computed.rewards,
+            computed.penalty_count,
+            computed.penalties,
+            computed.final_amount,
+            existing?.payment_status || 'unpaid',
+            existing?.paid_at || null
+        ]
+    );
+
+    return {
+        ...upsertRes.rows[0],
+        settings: computed.settings
+    };
 }
 
 async function ensureWastageConstraints() {
@@ -337,6 +702,7 @@ pool.query('SELECT NOW()')
     .then(async () => {
         await ensureMenuVotingTable();
         await ensureAttendanceTables();
+        await ensureBillingTables();
         await ensureAnonymousFeedbackTable();
         await ensureWastageConstraints();
         console.log('✅ Database connected');
@@ -345,16 +711,61 @@ pool.query('SELECT NOW()')
 
 app.use(express.json());
 app.use((req, res, next) => {
+    const originalJson = res.json.bind(res);
+
+    res.json = (payload) => {
+        const statusCode = res.statusCode || 200;
+        const isObjectPayload =
+            payload &&
+            typeof payload === 'object' &&
+            !Array.isArray(payload);
+
+        if (statusCode >= 400) {
+            const message = isObjectPayload
+                ? payload.message || payload.error || GENERIC_ERROR_MESSAGE
+                : GENERIC_ERROR_MESSAGE;
+
+            const normalizedPayload = isObjectPayload
+                ? {
+                    ...payload,
+                    success: false,
+                    message
+                }
+                : {
+                    success: false,
+                    message
+                };
+
+            if ('error' in normalizedPayload) {
+                delete normalizedPayload.error;
+            }
+
+            return originalJson(normalizedPayload);
+        }
+
+        return originalJson(payload);
+    };
+
+    next();
+});
+app.use((req, res, next) => {
     console.log('Incoming request:', req.method, req.url);
     next();
 });
 
 app.get('/', (req, res) => {
-    res.send('Backend is running');
+    res.json({
+        success: true,
+        message: 'Backend is running'
+    });
 });
 
 app.get('/api/health', (req, res) => {
-    res.json({ ok: true });
+    res.json({
+        success: true,
+        ok: true,
+        message: 'API is healthy'
+    });
 });
 
 // Auth middleware — extracts user from JWT
@@ -427,7 +838,7 @@ async function fetchOverviewMetrics() {
             "JOIN roles r ON up.role_id = r.id " +
             "WHERE up.is_active = true AND LOWER(r.name) = 'ngo'"
         ),
-        pool.query("SELECT COUNT(*)::int AS meals_served_today FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status = 'confirmed'"),
+        pool.query("SELECT COUNT(*)::int AS meals_served_today FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status IN ('booked', 'attended', 'skipped')"),
         pool.query("SELECT ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS food_wasted_today FROM wastage_logs WHERE date = CURRENT_DATE"),
         pool.query("SELECT ROUND(COALESCE(SUM(total_quantity_kg), 0)::numeric, 2)::float AS food_donated_today FROM donations WHERE DATE(created_at) = CURRENT_DATE")
     ]);
@@ -876,7 +1287,7 @@ app.get('/api/admin/hostels', authMiddleware, requireSuperAdmin, async (req, res
             "COALESCE((" +
             "   SELECT COUNT(*)::int FROM meal_bookings mb " +
             "   JOIN meals m ON m.id = mb.meal_id " +
-            "   WHERE mb.status = 'confirmed' AND m.date = CURRENT_DATE " +
+            "   WHERE mb.status IN ('booked', 'attended', 'skipped') AND m.date = CURRENT_DATE " +
             "     AND EXISTS (SELECT 1 FROM user_profiles u WHERE u.id = mb.user_id AND u.hostel_id = h.id)" +
             "), 0) AS meals_served_today, " +
             "COALESCE((" +
@@ -1080,6 +1491,7 @@ app.get('/api/meal-timings/current', async (req, res) => {
 app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
         const mealId = String(req.params.mealId || '').trim();
+        const requestedUserId = String(req.query.user_id || '').trim();
         if (!mealId) {
             return res.status(400).json({ error: 'mealId is required' });
         }
@@ -1099,7 +1511,44 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         const displayStart = canonicalTiming?.start || String(meal.start_time || '').slice(0, 5);
         const displayEnd = canonicalTiming?.end || String(meal.end_time || '').slice(0, 5);
 
-        const qrPayload = buildAttendanceQrPayload(mealType);
+        let qrToken = '';
+        let qrPayload = buildAttendanceQrPayload({ mealType, mealId });
+
+        if (requestedUserId) {
+            const bookingRes = await pool.query(
+                `SELECT id, user_id, booking_date, qr_token
+                 FROM meal_bookings
+                 WHERE meal_id = $1 AND user_id = $2`,
+                [mealId, requestedUserId]
+            );
+
+            if (bookingRes.rows.length === 0) {
+                return res.status(404).json({ error: 'No booking found for the selected user and meal' });
+            }
+
+            const booking = bookingRes.rows[0];
+            qrToken = booking.qr_token || buildBookingQrToken({
+                userId: booking.user_id,
+                mealId,
+                bookingDate: booking.booking_date,
+                mealType
+            });
+
+            if (!booking.qr_token) {
+                await pool.query(
+                    'UPDATE meal_bookings SET qr_token = $2, updated_at = NOW() WHERE id = $1',
+                    [booking.id, qrToken]
+                );
+            }
+
+            qrPayload = buildAttendanceQrPayload({
+                mealType,
+                mealId,
+                userId: booking.user_id,
+                qrToken
+            });
+        }
+
         const qrImage = await QRCode.toDataURL(qrPayload, { width: 512, margin: 2 });
 
         console.log(`[QR] Generated for ${mealType} (${meal.id}) with payload ${qrPayload}`);
@@ -1107,6 +1556,8 @@ app.get('/api/generate-qr/:mealId', authMiddleware, requireRole(['mess_manager',
         return res.json({
             meal_id: meal.id,
             meal_type: mealType,
+            user_id: requestedUserId || null,
+            qr_token: qrToken || null,
             qr_image: qrImage,
             timing: {
                 start: displayStart,
@@ -1137,6 +1588,9 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
         const parsedMealType = parseAttendanceQrPayload(body.meal_type);
         const parsedQrToken = parseAttendanceQrPayload(body.qr_token);
         const scannedMealType = parsedQrData.mealType || parsedMealType.mealType || parsedQrToken.mealType;
+        const scannedMealId = parsedQrData.mealId || parsedMealType.mealId || parsedQrToken.mealId;
+        const scannedUserId = parsedQrData.userId || parsedMealType.userId || parsedQrToken.userId;
+        const scannedQrToken = parsedQrData.qrToken || parsedMealType.qrToken || parsedQrToken.qrToken;
 
         console.log('[Attendance] Raw scanned QR value:', parsedQrData.rawValue || parsedMealType.rawValue || parsedQrToken.rawValue);
         console.log('[Attendance] Parsed QR data:', parsedQrData.parsedValue ?? parsedMealType.parsedValue ?? parsedQrToken.parsedValue ?? null);
@@ -1144,6 +1598,10 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
 
         if (!scannedMealType) {
             return res.status(400).json({ error: 'Invalid QR code' });
+        }
+
+        if (scannedUserId && scannedUserId !== req.user.id) {
+            return res.status(403).json({ error: 'This attendance QR belongs to another user' });
         }
 
         const ist = getISTNow();
@@ -1194,6 +1652,56 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
 
         await client.query('BEGIN');
         transactionStarted = true;
+        await syncSkippedBookings(client, { userId: req.user.id });
+
+        const bookingRes = await client.query(
+            `SELECT id, status, booking_date, original_price, discounted_price, reward_applied, attendance_status, qr_token
+             FROM meal_bookings
+             WHERE user_id = $1 AND meal_id = $2
+             LIMIT 1`,
+            [req.user.id, meal.id]
+        );
+
+        if (bookingRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            transactionStarted = false;
+            return res.status(400).json({ error: 'Meal must be booked before attendance can be marked' });
+        }
+
+        const booking = bookingRes.rows[0];
+        if (booking.status === 'skipped') {
+            await client.query('ROLLBACK');
+            transactionStarted = false;
+            return res.status(409).json({ error: 'This booking was already marked absent' });
+        }
+
+        if (scannedMealId && scannedMealId !== meal.id) {
+            await client.query('ROLLBACK');
+            transactionStarted = false;
+            return res.status(400).json({ error: 'QR code does not match this meal' });
+        }
+
+        if (scannedQrToken) {
+            const bookingToken = booking.qr_token || buildBookingQrToken({
+                userId: req.user.id,
+                mealId: meal.id,
+                bookingDate: booking.booking_date,
+                mealType
+            });
+
+            if (!booking.qr_token) {
+                await client.query(
+                    'UPDATE meal_bookings SET qr_token = $2, updated_at = NOW() WHERE id = $1',
+                    [booking.id, bookingToken]
+                );
+            }
+
+            if (scannedQrToken !== bookingToken) {
+                await client.query('ROLLBACK');
+                transactionStarted = false;
+                return res.status(400).json({ error: 'Invalid user-specific attendance QR' });
+            }
+        }
 
         let attendance;
         try {
@@ -1220,42 +1728,62 @@ app.post('/api/attendance', authMiddleware, requireRole(['student']), async (req
              DO UPDATE SET
                 points = student_rewards.points + 10,
                 total_meals = student_rewards.total_meals + 1,
+                total_rewards = student_rewards.total_rewards + 1,
+                penalty_status = CASE
+                    WHEN student_rewards.penalty_status = 'warning' THEN 'clear'
+                    ELSE student_rewards.penalty_status
+                END,
                 last_updated = NOW()
-             RETURNING points, total_meals`,
+             RETURNING points, total_meals, total_rewards, skipped_meals_count, penalty_status, total_penalties, penalty_note`,
             [req.user.id]
         );
 
         await client.query(
             `UPDATE meal_bookings
              SET checked_in_at = COALESCE(checked_in_at, NOW()),
-                 status = CASE WHEN status = 'confirmed' THEN 'consumed' ELSE status END,
+                 status = 'attended',
+                 attendance_status = 'present',
+                 discounted_price = $3,
+                 reward_applied = true,
                  updated_at = NOW()
              WHERE user_id = $1 AND meal_id = $2`,
-            [req.user.id, meal.id]
+            [req.user.id, meal.id, REWARDED_MEAL_FEE]
         );
 
         const rewardsRes = await client.query(
-            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
+            `SELECT points, total_meals, total_rewards, skipped_meals_count, penalty_status, total_penalties, penalty_note
+             FROM student_rewards WHERE user_id = $1`,
             [req.user.id]
         );
-        const rewards = rewardsRes.rows[0] || { points: 0, total_meals: 0 };
-        const discountPercent = Math.min(25, Math.max(0, Math.floor((Number(rewards.points) || 0) / 100)));
-        const effectiveFee = Number((DEFAULT_MEAL_BASE_FEE * (1 - discountPercent / 100)).toFixed(2));
+        const rewards = rewardsRes.rows[0] || {
+            points: 0,
+            total_meals: 0,
+            total_rewards: 0,
+            skipped_meals_count: 0,
+            penalty_status: 'clear',
+            total_penalties: 0,
+            penalty_note: ''
+        };
 
         await client.query('COMMIT');
         transactionStarted = false;
         return res.json({
             message: 'Attendance successfully recorded',
+            attendance_status: 'present',
             scanned_at: attendance.scanned_at,
             rewards: {
                 points: Number(rewards.points) || 0,
-                total_meals: Number(rewards.total_meals) || 0
+                total_meals: Number(rewards.total_meals) || 0,
+                total_rewards: Number(rewards.total_rewards) || 0
             },
-            fee_preview: {
-                base_fee: DEFAULT_MEAL_BASE_FEE,
-                discount_percent: discountPercent,
-                effective_fee: effectiveFee
+            penalty: {
+                skipped_meals_count: Number(rewards.skipped_meals_count) || 0,
+                penalty_status: normalizePenaltyStatus(rewards.penalty_status),
+                total_penalties: Number(rewards.total_penalties) || 0,
+                note: rewards.penalty_note || ''
             }
+            ,
+            fee_preview: buildFeePreview({ rewardApplied: true })
         });
     } catch (error) {
         if (transactionStarted) {
@@ -1278,7 +1806,7 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
         const queryDate = normalizeDateInput(req.query.date, getISTNow().dateString);
         const mealType = normalizeMealType(req.query.meal_type);
         const requestedStatus = normalizeAttendanceStatus(req.query.status);
-        const status = requestedStatus || 'present';
+        const status = requestedStatus && requestedStatus !== 'all' ? requestedStatus : '';
 
         if (req.query.date && !queryDate) {
             return res.status(400).json({ error: 'Invalid date. Expected YYYY-MM-DD' });
@@ -1289,8 +1817,14 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
         }
 
         if (req.query.status && !requestedStatus) {
-            return res.status(400).json({ error: 'Invalid status. Use present or absent' });
+            return res.status(400).json({ error: 'Invalid status. Use present, absent, or all' });
         }
+
+        await syncSkippedBookings(pool, {
+            userId: isAttendanceViewer(userRole) ? '' : req.user.id,
+            bookingDate: queryDate,
+            mealType
+        });
 
         const params = [];
         const filters = [];
@@ -1306,8 +1840,10 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
             params.push(mealType);
         }
 
-        filters.push(`a.status = $${index++}`);
-        params.push(status);
+        if (status) {
+            filters.push(`a.status = $${index++}`);
+            params.push(status);
+        }
 
         if (!isAttendanceViewer(userRole)) {
             filters.push(`a.user_id = $${index++}`);
@@ -1336,18 +1872,51 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
             scanned_at: row.scanned_at
         }));
 
+        const presentRecords = rows.filter((row) => row.status === 'present');
+        const absentRecords = rows.filter((row) => row.status === 'absent');
+
+        const bookingFilters = ['mb.booking_date = $1'];
+        const bookingParams = [queryDate];
+        let bookingIndex = 2;
+
+        if (mealType) {
+            bookingFilters.push(`m.meal_type = $${bookingIndex++}`);
+            bookingParams.push(mealType);
+        }
+
+        if (!isAttendanceViewer(userRole)) {
+            bookingFilters.push(`mb.user_id = $${bookingIndex++}`);
+            bookingParams.push(req.user.id);
+        }
+
+        const bookingTotalsRes = await pool.query(
+            `SELECT COUNT(*)::int AS meals_booked,
+                    COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS meals_attended,
+                    COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS meals_skipped
+             FROM meal_bookings mb
+             JOIN meals m ON m.id = mb.meal_id
+             WHERE ${bookingFilters.join(' AND ')}`,
+            bookingParams
+        );
+
         if (!isAttendanceViewer(userRole)) {
             return res.json({
-                total_present: rows.length,
-                records: rows
+                total_present: presentRecords.length,
+                total_absent: absentRecords.length,
+                records: rows,
+                present_users: presentRecords,
+                absent_users: absentRecords,
+                totals: bookingTotalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
             });
         }
 
         const analyticsParams = [queryDate];
         let analyticsQuery = `
-            SELECT meal_type, COUNT(*)::int AS total_present
+            SELECT meal_type,
+                   COUNT(*) FILTER (WHERE status = 'present')::int AS total_present,
+                   COUNT(*) FILTER (WHERE status = 'absent')::int AS total_absent
             FROM attendance
-            WHERE status = 'present' AND attendance_date = $1
+            WHERE attendance_date = $1
         `;
 
         if (mealType) {
@@ -1360,14 +1929,19 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
         const analyticsRes = await pool.query(analyticsQuery, analyticsParams);
 
         return res.json({
-            total_present: rows.length,
+            total_present: presentRecords.length,
+            total_absent: absentRecords.length,
             date: queryDate,
             meal_type: mealType || null,
             records: rows,
-            students: rows,
+            students: presentRecords,
+            present_users: presentRecords,
+            absent_users: absentRecords,
+            totals: bookingTotalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
             analytics: analyticsRes.rows.map((row) => ({
                 meal_type: row.meal_type,
-                total_present: Number(row.total_present) || 0
+                total_present: Number(row.total_present) || 0,
+                total_absent: Number(row.total_absent) || 0
             }))
         });
     } catch (error) {
@@ -1379,12 +1953,14 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
 // GET /api/attendance/history - Get attendance history for current student
 app.get('/api/attendance/history', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
+        await syncSkippedBookings(pool, { userId: req.user.id });
         const historyRes = await pool.query(
-            `SELECT a.id, a.scanned_at, m.meal_type
+            `SELECT a.id, a.scanned_at, a.status, m.meal_type, mb.original_price, mb.discounted_price, mb.reward_applied
              FROM attendance a
              JOIN meals m ON a.meal_id = m.id
+             LEFT JOIN meal_bookings mb ON mb.user_id = a.user_id AND mb.meal_id = a.meal_id
              WHERE a.user_id = $1
-             ORDER BY a.scanned_at DESC`,
+             ORDER BY a.attendance_date DESC, a.scanned_at DESC`,
             [req.user.id]
         );
         
@@ -1401,7 +1977,10 @@ app.get('/api/attendance/history', authMiddleware, requireRole(['student']), asy
                 date: istDateStr,
                 meal: String(row.meal_type || 'meal'),
                 time: formatTime12h(istTimeStr),
-                status: 'present' // default
+                status: row.status || 'present',
+                original_price: toNumber(row.original_price, DEFAULT_MEAL_BASE_FEE),
+                discounted_price: toNumber(row.discounted_price, DEFAULT_MEAL_BASE_FEE),
+                reward_applied: Boolean(row.reward_applied)
             };
         });
 
@@ -1415,25 +1994,37 @@ app.get('/api/attendance/history', authMiddleware, requireRole(['student']), asy
 // GET /api/rewards/summary - current student's reward summary
 app.get('/api/rewards/summary', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
+        await syncSkippedBookings(pool, { userId: req.user.id });
         const rewardsRes = await pool.query(
-            'SELECT points, total_meals FROM student_rewards WHERE user_id = $1',
+            `SELECT points, total_meals, total_rewards, skipped_meals_count, penalty_status, total_penalties, penalty_note
+             FROM student_rewards WHERE user_id = $1`,
             [req.user.id]
         );
-        const rewards = rewardsRes.rows[0] || { points: 0, total_meals: 0 };
+        const rewards = rewardsRes.rows[0] || {
+            points: 0,
+            total_meals: 0,
+            total_rewards: 0,
+            skipped_meals_count: 0,
+            penalty_status: 'clear',
+            total_penalties: 0,
+            penalty_note: ''
+        };
         const points = Number(rewards.points) || 0;
-        const discountPercent = Math.min(25, Math.max(0, Math.floor(points / 100)));
-        const effectiveFee = Number((DEFAULT_MEAL_BASE_FEE * (1 - discountPercent / 100)).toFixed(2));
 
         return res.json({
             rewards: {
                 points,
-                total_meals: Number(rewards.total_meals) || 0
+                total_meals: Number(rewards.total_meals) || 0,
+                total_rewards: Number(rewards.total_rewards) || 0
             },
-            fee_preview: {
-                base_fee: DEFAULT_MEAL_BASE_FEE,
-                discount_percent: discountPercent,
-                effective_fee: effectiveFee
+            penalty: {
+                skipped_meals_count: Number(rewards.skipped_meals_count) || 0,
+                penalty_status: normalizePenaltyStatus(rewards.penalty_status),
+                total_penalties: Number(rewards.total_penalties) || 0,
+                note: rewards.penalty_note || ''
             }
+            ,
+            fee_preview: buildFeePreview({ rewardApplied: true })
         });
     } catch (error) {
         console.error('Rewards summary error:', error);
@@ -1732,9 +2323,12 @@ app.get('/api/meal-bookings', authMiddleware, async (req, res) => {
     try {
         const { date } = req.query;
         if (!date) return res.status(400).json({ error: 'Date parameter required' });
+        await syncSkippedBookings(pool, { userId: req.user.id, bookingDate: date });
 
         const result = await pool.query(
-            'SELECT meal_id FROM meal_bookings WHERE user_id = $1 AND booking_date = $2',
+            `SELECT meal_id, status, original_price, discounted_price, reward_applied, attendance_status, qr_token
+             FROM meal_bookings
+             WHERE user_id = $1 AND booking_date = $2`,
             [req.user.id, date]
         );
         res.json(result.rows);
@@ -1746,9 +2340,11 @@ app.get('/api/meal-bookings', authMiddleware, async (req, res) => {
 // GET /api/meal-bookings/history — get booking history for current user
 app.get('/api/meal-bookings/history', authMiddleware, async (req, res) => {
     try {
+        await syncSkippedBookings(pool, { userId: req.user.id });
         const result = await pool.query(
             `SELECT mb.id, mb.status, mb.is_auto_booked, mb.booking_date,
-                    m.meal_type, m.start_time
+                    m.meal_type, m.start_time, mb.original_price, mb.discounted_price,
+                    mb.reward_applied, mb.attendance_status, mb.qr_token
              FROM meal_bookings mb
              LEFT JOIN meals m ON mb.meal_id = m.id
              WHERE mb.user_id = $1
@@ -1765,11 +2361,30 @@ app.get('/api/meal-bookings/history', authMiddleware, async (req, res) => {
 app.post('/api/meal-bookings', authMiddleware, async (req, res) => {
     try {
         const { meal_id, booking_date } = req.body;
+        const mealRes = await pool.query(
+            'SELECT id, meal_type, date FROM meals WHERE id = $1 LIMIT 1',
+            [meal_id]
+        );
+
+        if (mealRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Meal not found' });
+        }
+
+        const meal = mealRes.rows[0];
+        const qrToken = buildBookingQrToken({
+            userId: req.user.id,
+            mealId: meal_id,
+            bookingDate: booking_date || meal.date,
+            mealType: meal.meal_type
+        });
         const result = await pool.query(
-            `INSERT INTO meal_bookings (user_id, meal_id, booking_date, status)
-             VALUES ($1, $2, $3, 'confirmed')
-             RETURNING id`,
-            [req.user.id, meal_id, booking_date]
+            `INSERT INTO meal_bookings (
+                user_id, meal_id, booking_date, status, original_price, discounted_price,
+                reward_applied, attendance_status, qr_token
+             )
+             VALUES ($1, $2, $3, 'booked', $4, $4, false, 'pending', $5)
+             RETURNING id, original_price, discounted_price, reward_applied, attendance_status, qr_token`,
+            [req.user.id, meal_id, booking_date, DEFAULT_MEAL_BASE_FEE, qrToken]
         );
         res.status(201).json(result.rows[0]);
     } catch (error) {
@@ -1878,7 +2493,7 @@ app.get('/api/chef/menu', optionalAuth, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT m.*, 
-                (SELECT COUNT(*) FROM meal_bookings mb WHERE mb.meal_id = m.id AND mb.status = 'confirmed') as booked_count
+                (SELECT COUNT(*) FROM meal_bookings mb WHERE mb.meal_id = m.id AND mb.status IN ('booked', 'attended', 'skipped')) as booked_count
              FROM meals m 
              WHERE m.date = CURRENT_DATE
              ORDER BY m.start_time ASC`
@@ -1893,6 +2508,335 @@ app.get('/api/chef/menu', optionalAuth, async (req, res) => {
     }
 });
 
+app.get('/api/billing/summary', authMiddleware, requireRole(['student']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+        const billing = await upsertMonthlyBill(client, { userId: req.user.id, monthKey });
+        const paymentsRes = await client.query(
+            `SELECT amount, payment_date, payment_method, transaction_id, status
+             FROM payments
+             WHERE user_id = $1
+             ORDER BY payment_date DESC
+             LIMIT 12`,
+            [req.user.id]
+        );
+
+        return res.json({
+            billing,
+            monthly_breakdown: {
+                total_meals_booked: Number(billing.total_meals) || 0,
+                total_meals_attended: Number(billing.attended_meals) || 0,
+                total_meals_skipped: Number(billing.skipped_meals) || 0,
+                base_cost: toNumber(billing.base_amount, 0),
+                total_rewards: toNumber(billing.rewards, 0),
+                penalty_count: Number(billing.penalty_count) || 0,
+                total_penalty_amount: toNumber(billing.penalties, 0),
+                final_amount: toNumber(billing.final_amount, 0),
+                payment_status: billing.payment_status || 'unpaid'
+            },
+            payments: paymentsRes.rows
+        });
+    } catch (error) {
+        console.error('Billing summary error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing summary' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/billing/pay', authMiddleware, requireRole(['student']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.body?.month, getCurrentMonthKey());
+        await client.query('BEGIN');
+        const billing = await upsertMonthlyBill(client, { userId: req.user.id, monthKey });
+
+        if ((billing.payment_status || 'unpaid') === 'paid') {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'This bill is already marked as paid' });
+        }
+
+        const transactionId = `DEMO-${Date.now()}-${String(req.user.id).slice(0, 8)}`;
+        await client.query(
+            `UPDATE monthly_billing
+             SET payment_status = 'paid', paid_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [billing.id]
+        );
+        await client.query(
+            `INSERT INTO payments (user_id, billing_id, amount, payment_method, transaction_id, status)
+             VALUES ($1, $2, $3, $4, $5, 'paid')`,
+            [req.user.id, billing.id, billing.final_amount, 'demo_gateway', transactionId]
+        );
+        await client.query('COMMIT');
+
+        return res.json({
+            message: 'Payment recorded successfully',
+            transaction_id: transactionId,
+            payment_status: 'paid'
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Billing pay error:', error);
+        return res.status(500).json({ error: 'Failed to record payment' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/mess-manager/billing', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+        const paymentStatus = String(req.query.payment_status || 'all').trim().toLowerCase();
+        const hostelId = String(req.query.hostel_id || '').trim();
+        const block = String(req.query.block || '').trim().toLowerCase();
+        const { startDate, endDate } = getMonthDateRange(monthKey);
+
+        const studentsRes = await client.query(
+            `SELECT up.id, up.full_name AS name, up.email, up.room_number, up.hostel_id, h.name AS hostel_name
+             FROM user_profiles up
+             JOIN roles r ON up.role_id = r.id
+             LEFT JOIN hostels h ON up.hostel_id = h.id
+             WHERE up.is_active = true
+               AND LOWER(r.name) = 'student'
+               ${hostelId ? 'AND up.hostel_id = $1' : ''}
+             ORDER BY up.full_name ASC`,
+            hostelId ? [hostelId] : []
+        );
+
+        const billingRows = [];
+        for (const student of studentsRes.rows) {
+            if (block && !String(student.room_number || '').toLowerCase().startsWith(block)) {
+                continue;
+            }
+
+            const bill = await upsertMonthlyBill(client, { userId: student.id, monthKey });
+            if (paymentStatus !== 'all' && bill.payment_status !== paymentStatus) {
+                continue;
+            }
+
+            billingRows.push({
+                user_id: student.id,
+                name: student.name,
+                email: student.email,
+                hostel_name: student.hostel_name || 'Unassigned',
+                block: student.room_number ? String(student.room_number).charAt(0).toUpperCase() : 'NA',
+                total_bill: toNumber(bill.final_amount, 0),
+                payment_status: bill.payment_status || 'unpaid',
+                penalty_count: Number(bill.penalty_count) || 0,
+                rewards_earned: toNumber(bill.rewards, 0),
+                total_meals: Number(bill.total_meals) || 0
+            });
+        }
+
+        const totals = billingRows.reduce((acc, row) => {
+            acc.total_students += 1;
+            acc.total_revenue_expected += row.total_bill;
+            acc.total_rewards_given += row.rewards_earned;
+            acc.total_penalties_collected += row.penalty_count;
+            return acc;
+        }, {
+            total_students: 0,
+            total_revenue_expected: 0,
+            total_rewards_given: 0,
+            total_penalties_collected: 0
+        });
+
+        const aggregateMealsRes = await client.query(
+            `SELECT COUNT(*)::int AS total_meals_booked
+             FROM meal_bookings mb
+             JOIN user_profiles up ON up.id = mb.user_id
+             WHERE mb.booking_date >= $1
+               AND mb.booking_date <= $2
+               AND mb.status <> 'cancelled'
+               ${hostelId ? 'AND up.hostel_id = $3' : ''}`,
+            hostelId ? [startDate, endDate, hostelId] : [startDate, endDate]
+        );
+
+        return res.json({
+            month: monthKey,
+            overview: {
+                total_students: totals.total_students,
+                total_meals_booked: Number(aggregateMealsRes.rows[0]?.total_meals_booked) || 0,
+                total_revenue_expected: Number(totals.total_revenue_expected.toFixed(2)),
+                total_rewards_given: Number(totals.total_rewards_given.toFixed(2)),
+                total_penalties_collected: Number(totals.total_penalties_collected * (await getBillingSettings(client)).penalty_amount)
+            },
+            billing_rows: billingRows
+        });
+    } catch (error) {
+        console.error('Mess manager billing error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing dashboard' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/admin/billing/analytics', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+        const settings = await getBillingSettings(client);
+        const studentsRes = await client.query(
+            `SELECT up.id, up.full_name AS name, up.email, up.hostel_id, h.name AS hostel_name
+             FROM user_profiles up
+             JOIN roles r ON up.role_id = r.id
+             LEFT JOIN hostels h ON up.hostel_id = h.id
+             WHERE up.is_active = true AND LOWER(r.name) = 'student'
+             ORDER BY up.full_name ASC`
+        );
+
+        const bills = [];
+        for (const student of studentsRes.rows) {
+            const bill = await upsertMonthlyBill(client, { userId: student.id, monthKey });
+            bills.push({
+                ...bill,
+                name: student.name,
+                email: student.email,
+                hostel_name: student.hostel_name || 'Unassigned'
+            });
+        }
+
+        const totalMonthlyRevenue = bills.reduce((sum, bill) => sum + toNumber(bill.final_amount, 0), 0);
+        const pendingPayments = bills.filter((bill) => bill.payment_status !== 'paid').reduce((sum, bill) => sum + toNumber(bill.final_amount, 0), 0);
+        const paidCount = bills.filter((bill) => bill.payment_status === 'paid').length;
+        const collectionRate = bills.length > 0 ? Number(((paidCount / bills.length) * 100).toFixed(1)) : 0;
+
+        const topDefaulters = bills
+            .filter((bill) => bill.payment_status !== 'paid')
+            .sort((a, b) => toNumber(b.final_amount, 0) - toNumber(a.final_amount, 0))
+            .slice(0, 10);
+
+        const highPenaltyUsers = [...bills]
+            .sort((a, b) => (Number(b.penalty_count) || 0) - (Number(a.penalty_count) || 0))
+            .slice(0, 10);
+
+        return res.json({
+            month: monthKey,
+            overview: {
+                total_monthly_revenue: Number(totalMonthlyRevenue.toFixed(2)),
+                pending_payments: Number(pendingPayments.toFixed(2)),
+                collection_rate: collectionRate,
+                total_students: bills.length
+            },
+            settings,
+            top_defaulters: topDefaulters,
+            high_penalty_users: highPenaltyUsers,
+            billing_history: bills
+        });
+    } catch (error) {
+        console.error('Admin billing analytics error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing analytics' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/admin/billing/export', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const monthKey = normalizeMonthInput(req.query.month, getCurrentMonthKey());
+        const analytics = [];
+        const studentsRes = await client.query(
+            `SELECT up.id, up.full_name AS name, up.email, h.name AS hostel_name
+             FROM user_profiles up
+             JOIN roles r ON up.role_id = r.id
+             LEFT JOIN hostels h ON up.hostel_id = h.id
+             WHERE up.is_active = true AND LOWER(r.name) = 'student'
+             ORDER BY up.full_name ASC`
+        );
+
+        for (const student of studentsRes.rows) {
+            const bill = await upsertMonthlyBill(client, { userId: student.id, monthKey });
+            analytics.push({
+                name: student.name,
+                email: student.email,
+                hostel_name: student.hostel_name || 'Unassigned',
+                total_meals: bill.total_meals,
+                attended_meals: bill.attended_meals,
+                skipped_meals: bill.skipped_meals,
+                base_amount: bill.base_amount,
+                rewards: bill.rewards,
+                penalty_count: bill.penalty_count,
+                penalties: bill.penalties,
+                final_amount: bill.final_amount,
+                payment_status: bill.payment_status
+            });
+        }
+
+        const csvRows = [[
+            'Name', 'Email', 'Hostel', 'Total Meals', 'Attended Meals', 'Skipped Meals',
+            'Base Amount', 'Rewards', 'Penalty Count', 'Penalties', 'Final Amount', 'Payment Status'
+        ].join(',')];
+
+        analytics.forEach((row) => {
+            csvRows.push([
+                `"${String(row.name).replace(/"/g, '""')}"`,
+                `"${String(row.email || '').replace(/"/g, '""')}"`,
+                `"${String(row.hostel_name || '').replace(/"/g, '""')}"`,
+                row.total_meals,
+                row.attended_meals,
+                row.skipped_meals,
+                toNumber(row.base_amount, 0).toFixed(2),
+                toNumber(row.rewards, 0).toFixed(2),
+                row.penalty_count,
+                toNumber(row.penalties, 0).toFixed(2),
+                toNumber(row.final_amount, 0).toFixed(2),
+                row.payment_status
+            ].join(','));
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="billing-${monthKey}.csv"`);
+        return res.send(csvRows.join('\n'));
+    } catch (error) {
+        console.error('Billing export error:', error);
+        return res.status(500).json({ error: 'Failed to export billing report' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/admin/billing/settings', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    try {
+        return res.json(await getBillingSettings(pool));
+    } catch (error) {
+        console.error('Billing settings fetch error:', error);
+        return res.status(500).json({ error: 'Failed to fetch billing settings' });
+    }
+});
+
+app.put('/api/admin/billing/settings', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    try {
+        const mealPrice = Math.max(0, toNumber(req.body?.meal_price, DEFAULT_MEAL_BASE_FEE));
+        const rewardDiscount = Math.max(0, toNumber(req.body?.reward_discount_per_meal, REWARD_DISCOUNT_AMOUNT));
+        const penaltyAmount = Math.max(0, toNumber(req.body?.penalty_amount, DEFAULT_PENALTY_AMOUNT));
+        const skipThreshold = Math.max(1, parseInt(req.body?.penalty_skip_threshold || PENALTY_SKIP_THRESHOLD, 10));
+
+        await pool.query(
+            `UPDATE billing_settings
+             SET meal_price = $1,
+                 reward_discount_per_meal = $2,
+                 penalty_amount = $3,
+                 penalty_skip_threshold = $4,
+                 updated_at = NOW(),
+                 updated_by = $5
+             WHERE id = 1`,
+            [mealPrice, rewardDiscount, penaltyAmount, skipThreshold, req.user.id]
+        );
+
+        return res.json({
+            message: 'Billing settings updated',
+            settings: await getBillingSettings(pool)
+        });
+    } catch (error) {
+        console.error('Billing settings update error:', error);
+        return res.status(500).json({ error: 'Failed to update billing settings' });
+    }
+});
+
 // GET /api/chef/prediction — AI Waste Predictor
 app.get('/api/chef/prediction', optionalAuth, async (req, res) => {
     console.log('Route hit:', req.url);
@@ -1902,7 +2846,7 @@ app.get('/api/chef/prediction', optionalAuth, async (req, res) => {
         // Find today's meals
         const mealsRes = await pool.query(
             `SELECT m.id, m.meal_type, 
-                (SELECT COUNT(*) FROM meal_bookings mb WHERE mb.meal_id = m.id AND mb.status = 'confirmed') as booked_count
+                (SELECT COUNT(*) FROM meal_bookings mb WHERE mb.meal_id = m.id AND mb.status IN ('booked', 'attended', 'skipped')) as booked_count
              FROM meals m 
              WHERE m.date = CURRENT_DATE`
         );
@@ -2693,31 +3637,222 @@ app.get('/api/analytics/overview', authMiddleware, requireRole(['super_admin', '
     }
 });
 
+app.get('/api/admin/meal-governance', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    try {
+        const queryDate = normalizeDateInput(req.query.date, getISTNow().dateString);
+        const mealType = normalizeMealType(req.query.meal_type);
+
+        await syncSkippedBookings(pool, { bookingDate: queryDate, mealType });
+
+        const bookingFilters = ['mb.booking_date = $1', "mb.status <> 'cancelled'"];
+        const bookingParams = [queryDate];
+        let index = 2;
+
+        if (mealType) {
+            bookingFilters.push(`m.meal_type = $${index++}`);
+            bookingParams.push(mealType);
+        }
+
+        const [
+            userCountRes,
+            bookingTotalsRes,
+            penaltyRewardRes,
+            absenteeRes,
+            flaggedUsersRes,
+            userHistoryRes
+        ] = await Promise.all([
+            pool.query("SELECT COUNT(*)::int AS total_users FROM user_profiles up JOIN roles r ON up.role_id = r.id WHERE up.is_active = true AND LOWER(r.name) = 'student'"),
+            pool.query(
+                `SELECT COUNT(*)::int AS total_meals_booked,
+                        COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS meals_attended,
+                        COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS meals_skipped
+                 FROM meal_bookings mb
+                 JOIN meals m ON m.id = mb.meal_id
+                 WHERE ${bookingFilters.join(' AND ')}`,
+                bookingParams
+            ),
+            pool.query(
+                `SELECT COALESCE(SUM(total_penalties), 0)::int AS total_penalties_applied,
+                        COALESCE(SUM(total_rewards), 0)::int AS total_rewards_given
+                 FROM student_rewards`
+            ),
+            pool.query(
+                `SELECT up.id, up.full_name AS name, up.email,
+                        COUNT(*) FILTER (WHERE mb.status = 'skipped')::int AS skipped_count,
+                        COUNT(*) FILTER (WHERE mb.status = 'attended')::int AS attended_count
+                 FROM meal_bookings mb
+                 JOIN user_profiles up ON up.id = mb.user_id
+                 JOIN meals m ON m.id = mb.meal_id
+                 WHERE ${bookingFilters.join(' AND ')}
+                 GROUP BY up.id, up.full_name, up.email
+                 ORDER BY skipped_count DESC, attended_count ASC, up.full_name ASC
+                 LIMIT 10`,
+                bookingParams
+            ),
+            pool.query(
+                `SELECT up.id, up.full_name AS name, up.email, sr.skipped_meals_count, sr.penalty_status, sr.total_penalties, sr.total_rewards
+                 FROM student_rewards sr
+                 JOIN user_profiles up ON up.id = sr.user_id
+                 WHERE sr.skipped_meals_count > 0 OR sr.penalty_status = 'penalty' OR sr.total_rewards > 0
+                 ORDER BY sr.penalty_status DESC, sr.skipped_meals_count DESC, sr.total_rewards DESC, up.full_name ASC`
+            ),
+            pool.query(
+                `SELECT mb.id, mb.user_id, up.full_name AS name, up.email, mb.booking_date, m.meal_type,
+                        mb.status, mb.original_price, mb.discounted_price, mb.reward_applied, mb.attendance_status
+                 FROM meal_bookings mb
+                 JOIN user_profiles up ON up.id = mb.user_id
+                 JOIN meals m ON m.id = mb.meal_id
+                 WHERE ${bookingFilters.join(' AND ')}
+                 ORDER BY mb.booking_date DESC, up.full_name ASC, m.meal_type ASC
+                 LIMIT 200`,
+                bookingParams
+            )
+        ]);
+
+        const totals = bookingTotalsRes.rows[0] || {
+            total_meals_booked: 0,
+            meals_attended: 0,
+            meals_skipped: 0
+        };
+        const totalMealsBooked = Number(totals.total_meals_booked) || 0;
+        const mealsAttended = Number(totals.meals_attended) || 0;
+        const attendanceRate = totalMealsBooked > 0
+            ? Number(((mealsAttended / totalMealsBooked) * 100).toFixed(1))
+            : 0;
+
+        return res.json({
+            filters: {
+                date: queryDate,
+                meal_type: mealType || null
+            },
+            overview: {
+                total_users: Number(userCountRes.rows[0]?.total_users) || 0,
+                total_meals_booked: totalMealsBooked,
+                attendance_rate: attendanceRate,
+                total_penalties_applied: Number(penaltyRewardRes.rows[0]?.total_penalties_applied) || 0,
+                total_rewards_given: Number(penaltyRewardRes.rows[0]?.total_rewards_given) || 0,
+                meals_attended: mealsAttended,
+                meals_skipped: Number(totals.meals_skipped) || 0
+            },
+            insights: {
+                frequent_absentees: absenteeRes.rows,
+                flagged_users: flaggedUsersRes.rows
+            },
+            user_history: userHistoryRes.rows
+        });
+    } catch (error) {
+        console.error('Meal governance analytics error:', error);
+        return res.status(500).json({ error: 'Failed to fetch meal governance analytics' });
+    }
+});
+
+app.get('/api/admin/meal-governance/export', authMiddleware, requireRole(['super_admin', 'hostel_admin']), async (req, res) => {
+    try {
+        const queryDate = normalizeDateInput(req.query.date, getISTNow().dateString);
+        const mealType = normalizeMealType(req.query.meal_type);
+        await syncSkippedBookings(pool, { bookingDate: queryDate, mealType });
+
+        const params = [queryDate];
+        let query = `
+            SELECT up.full_name AS name, up.email, mb.booking_date, m.meal_type,
+                   mb.status, mb.attendance_status, mb.original_price, mb.discounted_price,
+                   mb.reward_applied
+            FROM meal_bookings mb
+            JOIN user_profiles up ON up.id = mb.user_id
+            JOIN meals m ON m.id = mb.meal_id
+            WHERE mb.booking_date = $1 AND mb.status <> 'cancelled'
+        `;
+
+        if (mealType) {
+            query += ' AND m.meal_type = $2';
+            params.push(mealType);
+        }
+
+        query += ' ORDER BY up.full_name ASC, m.meal_type ASC';
+
+        const result = await pool.query(query, params);
+        const csvRows = [
+            ['Name', 'Email', 'Booking Date', 'Meal Type', 'Status', 'Attendance Status', 'Original Price', 'Discounted Price', 'Reward Applied'].join(',')
+        ];
+
+        result.rows.forEach((row) => {
+            csvRows.push([
+                `"${String(row.name || '').replace(/"/g, '""')}"`,
+                `"${String(row.email || '').replace(/"/g, '""')}"`,
+                row.booking_date,
+                row.meal_type,
+                row.status,
+                row.attendance_status,
+                toNumber(row.original_price, DEFAULT_MEAL_BASE_FEE).toFixed(2),
+                toNumber(row.discounted_price, DEFAULT_MEAL_BASE_FEE).toFixed(2),
+                row.reward_applied ? 'true' : 'false'
+            ].join(','));
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="meal-governance-${queryDate}.csv"`);
+        return res.send(csvRows.join('\n'));
+    } catch (error) {
+        console.error('Meal governance export error:', error);
+        return res.status(500).json({ error: 'Failed to export meal governance report' });
+    }
+});
+
 // GET /api/student/dashboard - Student summary card data
 app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), async (req, res) => {
     try {
-        const [bookingsRes, donationsRes, wasteRes] = await Promise.all([
+        await syncSkippedBookings(pool, { userId: req.user.id });
+        const [bookingsRes, donationsRes, rewardRes] = await Promise.all([
             pool.query(
-                "SELECT COUNT(*)::int AS meals_booked FROM meal_bookings WHERE user_id = $1 AND status = 'confirmed'",
+                `SELECT COUNT(*)::int AS meals_booked,
+                        COUNT(*) FILTER (WHERE status = 'attended')::int AS meals_attended,
+                        COUNT(*) FILTER (WHERE status = 'skipped')::int AS meals_skipped
+                 FROM meal_bookings
+                 WHERE user_id = $1 AND status <> 'cancelled'`,
                 [req.user.id]
             ),
             pool.query(
                 "SELECT COUNT(*)::int AS donations_count FROM donations WHERE status = 'completed'"
             ),
             pool.query(
-                "SELECT ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS total_waste FROM wastage_logs WHERE date >= CURRENT_DATE - INTERVAL '30 days'"
+                `SELECT points, total_meals, total_rewards, skipped_meals_count, penalty_status, total_penalties, penalty_note
+                 FROM student_rewards WHERE user_id = $1`,
+                [req.user.id]
             )
         ]);
 
         const mealsBooked = bookingsRes.rows[0]?.meals_booked || 0;
-        const wasteKg = wasteRes.rows[0]?.total_waste || 0;
-        const sustainabilityScore = Math.max(0, 100 - Math.min(100, Math.round(wasteKg)));
+        const mealsAttended = bookingsRes.rows[0]?.meals_attended || 0;
+        const mealsSkipped = bookingsRes.rows[0]?.meals_skipped || 0;
+        const attendanceRate = mealsBooked > 0 ? Number(((mealsAttended / mealsBooked) * 100).toFixed(1)) : 0;
+        const reward = rewardRes.rows[0] || {
+            points: 0,
+            total_meals: 0,
+            total_rewards: 0,
+            skipped_meals_count: 0,
+            penalty_status: 'clear',
+            total_penalties: 0,
+            penalty_note: ''
+        };
 
         res.json({
             meals_booked: mealsBooked,
-            wastes_prevented_kg: wasteKg,
-            sustainability_score: sustainabilityScore,
-            donations_completed: donationsRes.rows[0]?.donations_count || 0
+            meals_attended: mealsAttended,
+            meals_skipped: mealsSkipped,
+            attendance_rate: attendanceRate,
+            donations_completed: donationsRes.rows[0]?.donations_count || 0,
+            reward_summary: {
+                points: Number(reward.points) || 0,
+                total_meals: Number(reward.total_meals) || 0,
+                total_rewards: Number(reward.total_rewards) || 0
+            },
+            penalty_summary: {
+                skipped_meals_count: Number(reward.skipped_meals_count) || 0,
+                penalty_status: normalizePenaltyStatus(reward.penalty_status),
+                total_penalties: Number(reward.total_penalties) || 0,
+                note: reward.penalty_note || ''
+            },
+            fee_preview: buildFeePreview({ rewardApplied: true })
         });
     } catch (error) {
         console.error('Student dashboard error:', error);
@@ -2729,9 +3864,10 @@ app.get('/api/student/dashboard', authMiddleware, requireRole(['student']), asyn
 app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manager', 'hostel_admin', 'super_admin']), async (req, res) => {
     try {
         const today = getISTNow().dateString;
+        await syncSkippedBookings(pool, { bookingDate: today });
         const [bookingsRes, expectedRes, lowStockRes, wastageRes, alertsRes, attendanceRes, attendanceByMealRes] = await Promise.all([
-            pool.query("SELECT COUNT(*)::int AS total_bookings FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status = 'confirmed'"),
-            pool.query("SELECT COUNT(*)::int AS expected_attendance FROM meal_bookings WHERE booking_date = CURRENT_DATE"),
+            pool.query("SELECT COUNT(*)::int AS total_bookings FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status <> 'cancelled'"),
+            pool.query("SELECT COUNT(*)::int AS expected_attendance FROM meal_bookings WHERE booking_date = CURRENT_DATE AND status IN ('booked', 'attended', 'skipped')"),
             pool.query("SELECT COUNT(*)::int AS low_stock_items FROM inventory WHERE is_active = true AND quantity <= reorder_level"),
             pool.query("SELECT ROUND(COALESCE(SUM(quantity_wasted), 0)::numeric, 2)::float AS today_wastage FROM wastage_logs WHERE date = CURRENT_DATE"),
             pool.query(
@@ -2756,21 +3892,57 @@ app.get('/api/mess-manager/dashboard', authMiddleware, requireRole(['mess_manage
             )
         ]);
 
+        const [absentRes, totalsRes, penaltyRes, rewardRes] = await Promise.all([
+            pool.query(
+                `SELECT a.user_id AS student_id, up.full_name AS name, a.meal_type, a.scanned_at
+                 FROM attendance a
+                 JOIN user_profiles up ON up.id = a.user_id
+                 WHERE a.attendance_date = $1 AND a.status = 'absent'
+                 ORDER BY up.full_name ASC`,
+                [today]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS meals_booked,
+                        COUNT(*) FILTER (WHERE status = 'attended')::int AS meals_attended,
+                        COUNT(*) FILTER (WHERE status = 'skipped')::int AS meals_skipped
+                 FROM meal_bookings
+                 WHERE booking_date = $1 AND status <> 'cancelled'`,
+                [today]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS total_penalties
+                 FROM student_rewards
+                 WHERE penalty_status = 'penalty'`
+            ),
+            pool.query(
+                `SELECT COALESCE(SUM(total_rewards), 0)::int AS total_rewards
+                 FROM student_rewards`
+            )
+        ]);
+
         res.json({
             stats: {
                 total_bookings: bookingsRes.rows[0]?.total_bookings || 0,
                 expected_attendance: expectedRes.rows[0]?.expected_attendance || 0,
                 low_stock_items: lowStockRes.rows[0]?.low_stock_items || 0,
-                today_wastage: wastageRes.rows[0]?.today_wastage || 0
+                today_wastage: wastageRes.rows[0]?.today_wastage || 0,
+                meals_attended: totalsRes.rows[0]?.meals_attended || 0,
+                meals_skipped: totalsRes.rows[0]?.meals_skipped || 0,
+                total_penalties: penaltyRes.rows[0]?.total_penalties || 0,
+                total_rewards: rewardRes.rows[0]?.total_rewards || 0
             },
             attendance: {
                 date: today,
                 total_present: attendanceRes.rows.length,
+                total_absent: absentRes.rows.length,
                 students: attendanceRes.rows,
+                present_users: attendanceRes.rows,
+                absent_users: absentRes.rows,
                 totals_by_meal: attendanceByMealRes.rows.map((row) => ({
                     meal_type: row.meal_type,
                     total_present: Number(row.total_present) || 0
-                }))
+                })),
+                totals: totalsRes.rows[0] || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
             },
             alerts: alertsRes.rows.map((r) => ({
                 id: r.id,
@@ -2863,12 +4035,34 @@ routes.post('/menu', authMiddleware, requireRole(['super_admin', 'mess_manager',
 app.use('/api', routes);
 
 app.use((err, req, res, next) => {
-    if (err && err.message === 'CORS origin not allowed') {
-        return res.status(403).json({ error: 'CORS origin not allowed' });
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        console.error('Invalid JSON request body:', {
+            method: req.method,
+            url: req.originalUrl,
+            message: err.message
+        });
+        return res.status(400).json({ message: 'Invalid JSON request body' });
     }
 
-    console.error('Unhandled error:', err);
-    return res.status(err?.status || 500).json({ error: err?.message || 'Internal server error' });
+    if (err && err.message === 'CORS origin not allowed') {
+        console.error('CORS error:', {
+            method: req.method,
+            url: req.originalUrl,
+            origin: req.headers.origin
+        });
+        return res.status(403).json({ message: 'CORS origin not allowed' });
+    }
+
+    console.error('Unhandled error:', {
+        method: req.method,
+        url: req.originalUrl,
+        status: err?.status || 500,
+        message: err?.message,
+        stack: err?.stack
+    });
+    return res
+        .status(err?.status || 500)
+        .json({ message: err?.message || 'Internal server error' });
 });
 
 app.listen(PORT, () => {

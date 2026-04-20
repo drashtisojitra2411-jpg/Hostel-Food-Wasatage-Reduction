@@ -1,19 +1,19 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { getDashboardPath } from '../../components/ProtectedRoute'
 import { useAuth } from '../../context/AuthContext'
+import { getDashboardPath } from '../../components/ProtectedRoute'
 import Button from '../../components/common/Button'
 import Card from '../../components/common/Card'
-import api from '../../lib/api'
 
 export default function Login() {
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
     const [error, setError] = useState('')
     const [loading, setLoading] = useState(false)
-    const { applyLoginPayload } = useAuth()
+    const { signIn } = useAuth()
     const navigate = useNavigate()
     const location = useLocation()
+
 
     const from = location.state?.from?.pathname
 
@@ -29,27 +29,11 @@ export default function Login() {
 
         setLoading(true)
         try {
-            const data = await api.post('/login', { email, password })
-
-            if (!data?.token) {
-                throw new Error('Login failed: missing token in response')
-            }
-
-            const resolvedRole = applyLoginPayload(data)
-            const nextPath = from || getDashboardPath(resolvedRole)
+            const data = await signIn({ email, password })
+            const nextPath = from || getDashboardPath(data?.profile?.roles?.name?.toLowerCase())
             navigate(nextPath, { replace: true })
         } catch (err) {
-            console.log(err)
-            if (err?.response) {
-                setError(
-                    err.response?.data?.message ||
-                    err.response?.data?.error ||
-                    err.message ||
-                    'Failed to sign in'
-                )
-            } else {
-                setError('Server not reachable')
-            }
+            setError(err.message || 'Failed to sign in')
         } finally {
             setLoading(false)
         }

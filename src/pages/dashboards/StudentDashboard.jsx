@@ -18,12 +18,16 @@ export default function StudentDashboard() {
     const navigate = useNavigate()
 
     const [selectedPreference, setSelectedPreference] = useState(null)
-    const [stats, setStats] = useState({ mealsBooked: 0, wastesPrevented: 0, sustainabilityScore: 0, donations: 0 })
+    const [stats, setStats] = useState({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, attendanceRate: 0, donations: 0 })
     const [activities, setActivities] = useState([])
     const [rewardSummary, setRewardSummary] = useState({
-        rewards: { points: 0, total_meals: 0 },
-        fee_preview: { base_fee: 120, discount_percent: 0, effective_fee: 120 }
+        rewards: { points: 0, total_meals: 0, total_rewards: 0 },
+        penalty: { skipped_meals_count: 0, penalty_status: 'clear', total_penalties: 0, note: '' },
+        fee_preview: { base_fee: 100, discount_percent: 10, effective_fee: 90 }
     })
+    const [billingSummary, setBillingSummary] = useState(null)
+    const [billingMonth, setBillingMonth] = useState(new Date().toISOString().slice(0, 7))
+    const [paying, setPaying] = useState(false)
 
     const greeting = useMemo(() => {
         const hour = new Date().getHours()
@@ -36,9 +40,9 @@ export default function StudentDashboard() {
 
     const statCards = useMemo(() => [
         { label: 'Meals Booked', value: stats.mealsBooked },
-        { label: 'Waste Saved (kg)', value: stats.wastesPrevented },
-        { label: 'Efficiency Score', value: `${stats.sustainabilityScore}%` },
-        { label: 'Donations', value: stats.donations }
+        { label: 'Meals Attended', value: stats.mealsAttended },
+        { label: 'Meals Skipped', value: stats.mealsSkipped },
+        { label: 'Attendance Rate', value: `${stats.attendanceRate}%` }
     ], [stats])
 
     const rewardsProgress = useMemo(() => {
@@ -47,18 +51,20 @@ export default function StudentDashboard() {
         return Math.min(100, (points % progressBase))
     }, [rewardSummary?.rewards?.points])
 
-    const fetchDashboardData = useCallback(async () => {
+    const fetchDashboardData = useCallback(async (month = billingMonth) => {
         try {
-            const [dashboardRes, historyRes, rewardsRes] = await Promise.all([
+            const [dashboardRes, historyRes, rewardsRes, billingRes] = await Promise.all([
                 api.get('/api/student/dashboard'),
                 api.get('/api/meal-bookings/history'),
-                api.get('/api/rewards/summary')
+                api.get('/api/rewards/summary'),
+                api.get(`/api/billing/summary?month=${month}`)
             ])
 
             setStats({
                 mealsBooked: dashboardRes?.meals_booked || 0,
-                wastesPrevented: dashboardRes?.wastes_prevented_kg || 0,
-                sustainabilityScore: dashboardRes?.sustainability_score || 0,
+                mealsAttended: dashboardRes?.meals_attended || 0,
+                mealsSkipped: dashboardRes?.meals_skipped || 0,
+                attendanceRate: dashboardRes?.attendance_rate || 0,
                 donations: dashboardRes?.donations_completed || 0
             })
 
@@ -69,15 +75,28 @@ export default function StudentDashboard() {
             }))
             setActivities(latest)
             setRewardSummary(rewardsRes || rewardSummary)
+            setBillingSummary(billingRes || null)
         } catch {
-            setStats({ mealsBooked: 0, wastesPrevented: 0, sustainabilityScore: 0, donations: 0 })
+            setStats({ mealsBooked: 0, mealsAttended: 0, mealsSkipped: 0, attendanceRate: 0, donations: 0 })
             setActivities([])
+            setBillingSummary(null)
         }
-    }, [])
+    }, [billingMonth])
 
     useEffect(() => {
-        fetchDashboardData()
-    }, [fetchDashboardData])
+        fetchDashboardData(billingMonth)
+    }, [fetchDashboardData, billingMonth])
+
+    async function handlePayNow() {
+        if (!billingSummary?.billing || paying) return
+        setPaying(true)
+        try {
+            await api.post('/api/billing/pay', { month: billingMonth })
+            await fetchDashboardData(billingMonth)
+        } finally {
+            setPaying(false)
+        }
+    }
 
     const handleLogout = async () => {
         await signOut()
@@ -124,10 +143,26 @@ export default function StudentDashboard() {
                                     <p className="text-2xl font-semibold tracking-tight">{rewardSummary?.rewards?.points || 0}</p>
                                 </div>
                                 <div className="rounded-xl border border-white/15 bg-white/5 px-4 py-3">
-                                    <p className="text-xs text-white/60">Your Meal Fee</p>
+                                    <p className="text-xs text-white/60">Rewarded Meal Price</p>
                                     <p className="text-xl font-semibold tracking-tight">
-                                        INR {rewardSummary?.fee_preview?.effective_fee ?? 120}
+                                        INR {rewardSummary?.fee_preview?.effective_fee ?? 90}
                                         <span className="text-sm text-creative-lime ml-2">({rewardSummary?.fee_preview?.discount_percent || 0}% discount)</span>
+                                    </p>
+                                    <p className="text-xs text-white/50 mt-1">Base meal price: INR {rewardSummary?.fee_preview?.base_fee ?? 100}</p>
+                                </div>
+                                <div className="rounded-xl border border-white/15 bg-white/5 px-4 py-3">
+                                    <p className="text-xs text-white/60">Penalty Status</p>
+                                    <p className={`text-xl font-semibold tracking-tight capitalize ${
+                                        rewardSummary?.penalty?.penalty_status === 'penalty'
+                                            ? 'text-red-400'
+                                            : rewardSummary?.penalty?.penalty_status === 'warning'
+                                                ? 'text-yellow-300'
+                                                : 'text-creative-lime'
+                                    }`}>
+                                        {rewardSummary?.penalty?.penalty_status || 'clear'}
+                                    </p>
+                                    <p className="text-xs text-white/50 mt-1">
+                                        Skipped booked meals: {rewardSummary?.penalty?.skipped_meals_count || 0} | Penalties: {rewardSummary?.penalty?.total_penalties || 0}
                                     </p>
                                 </div>
                                 <div>
@@ -143,23 +178,47 @@ export default function StudentDashboard() {
                         </Card>
 
                         <Card variant="glass" className="rounded-2xl p-5 md:p-6 xl:col-span-2" hover={false}>
-                            <h2 className="text-lg md:text-xl font-semibold tracking-tight">Diet Preference</h2>
-                            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
-                                {preferenceOptions.map((pref) => (
-                                    <button
-                                        key={pref.id}
-                                        type="button"
-                                        onClick={() => setSelectedPreference(pref.id)}
-                                        className={`text-left rounded-xl border px-4 py-4 min-h-[84px] transition-colors ${
-                                            selectedPreference === pref.id
-                                                ? 'border-creative-lime bg-creative-lime/10'
-                                                : 'border-white/15 bg-white/5 hover:bg-white/10'
-                                        }`}
-                                    >
-                                        <p className="font-medium">{pref.label}</p>
-                                        <p className="text-xs text-white/60 mt-1">{pref.desc}</p>
-                                    </button>
+                            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                                <div>
+                                    <h2 className="text-lg md:text-xl font-semibold tracking-tight">Monthly Bill Breakdown</h2>
+                                    <p className="text-sm text-white/60 mt-1">Base: booked meals x ₹100, rewards: attended meals x ₹10, penalties after every 4 skipped meals.</p>
+                                </div>
+                                <input
+                                    type="month"
+                                    value={billingMonth}
+                                    onChange={(event) => setBillingMonth(event.target.value)}
+                                    className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm"
+                                />
+                            </div>
+                            <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+                                {[
+                                    { label: 'Booked', value: billingSummary?.monthly_breakdown?.total_meals_booked ?? 0 },
+                                    { label: 'Attended', value: billingSummary?.monthly_breakdown?.total_meals_attended ?? 0, tone: 'text-creative-lime' },
+                                    { label: 'Skipped', value: billingSummary?.monthly_breakdown?.total_meals_skipped ?? 0, tone: 'text-red-400' },
+                                    { label: 'Rewards', value: `₹${billingSummary?.monthly_breakdown?.total_rewards ?? 0}`, tone: 'text-creative-lime' },
+                                    { label: 'Penalties', value: `₹${billingSummary?.monthly_breakdown?.total_penalty_amount ?? 0}`, tone: 'text-red-400' }
+                                ].map((item) => (
+                                    <div key={item.label} className="rounded-xl border border-white/15 bg-white/5 px-4 py-4">
+                                        <p className="text-xs text-white/60">{item.label}</p>
+                                        <p className={`mt-2 text-2xl font-semibold tracking-tight ${item.tone || ''}`}>{item.value}</p>
+                                    </div>
                                 ))}
+                            </div>
+                            <div className="mt-4 rounded-xl border border-white/15 bg-white/5 px-4 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                <div>
+                                    <p className="text-xs text-white/60">Final Payable Amount</p>
+                                    <p className="mt-2 text-3xl font-semibold tracking-tight">₹{billingSummary?.monthly_breakdown?.final_amount ?? 0}</p>
+                                    <p className={`text-sm mt-1 ${(billingSummary?.monthly_breakdown?.payment_status || 'unpaid') === 'paid' ? 'text-creative-lime' : 'text-red-400'}`}>
+                                        {(billingSummary?.monthly_breakdown?.payment_status || 'unpaid').toUpperCase()}
+                                    </p>
+                                </div>
+                                <Button
+                                    onClick={handlePayNow}
+                                    disabled={!billingSummary?.billing || billingSummary?.monthly_breakdown?.payment_status === 'paid'}
+                                    isLoading={paying}
+                                >
+                                    {billingSummary?.monthly_breakdown?.payment_status === 'paid' ? 'Paid' : 'Pay Now'}
+                                </Button>
                             </div>
                         </Card>
                     </section>
@@ -180,6 +239,14 @@ export default function StudentDashboard() {
                                         <p className="text-xs text-white/60 mt-1">{activity.time}</p>
                                     </div>
                                 ))}
+                                <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
+                                    <p className="text-xs uppercase tracking-widest text-red-300">Penalty Rule</p>
+                                    <p className="text-sm text-white/70 mt-1">Skipping 4 booked meals triggers a penalty and resets the skip counter.</p>
+                                </div>
+                                <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
+                                    <p className="text-xs uppercase tracking-widest text-white/60">Dummy Payment Gateway</p>
+                                    <p className="text-sm text-white/70 mt-1">`Pay Now` marks the selected monthly bill as paid and stores a demo transaction record.</p>
+                                </div>
                             </div>
                         </Card>
                     </section>

@@ -29,7 +29,10 @@ export default function AttendancePage() {
     const [error, setError] = useState('')
     const [attendance, setAttendance] = useState({
         totalPresent: 0,
-        records: []
+        totalAbsent: 0,
+        totals: { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
+        presentUsers: [],
+        absentUsers: []
     })
 
     useEffect(() => {
@@ -53,11 +56,20 @@ export default function AttendancePage() {
                     : []
 
             setAttendance({
-                totalPresent: Number(response?.total_present || records.length || 0),
-                records
+                totalPresent: Number(response?.total_present || 0),
+                totalAbsent: Number(response?.total_absent || 0),
+                totals: response?.totals || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
+                presentUsers: Array.isArray(response?.present_users) ? response.present_users : records.filter((row) => row.status === 'present'),
+                absentUsers: Array.isArray(response?.absent_users) ? response.absent_users : records.filter((row) => row.status === 'absent')
             })
         } catch (fetchError) {
-            setAttendance({ totalPresent: 0, records: [] })
+            setAttendance({
+                totalPresent: 0,
+                totalAbsent: 0,
+                totals: { meals_booked: 0, meals_attended: 0, meals_skipped: 0 },
+                presentUsers: [],
+                absentUsers: []
+            })
             setError(fetchError.message || 'Failed to load attendance')
         } finally {
             setLoading(false)
@@ -94,13 +106,19 @@ export default function AttendancePage() {
                     </header>
 
                     <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                        <Card variant="glass" className="lg:col-span-1">
-                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/35">Total Present</p>
-                            <p className="text-5xl font-black text-creative-lime mt-4">{loading ? '--' : attendance.totalPresent}</p>
-                            <p className="text-sm text-white/45 mt-3">Students marked present for the selected filter set.</p>
-                        </Card>
+                        {[
+                            { label: 'Meals Booked', value: attendance.totals.meals_booked, tone: 'text-white' },
+                            { label: 'Meals Attended', value: attendance.totals.meals_attended, tone: 'text-creative-lime' },
+                            { label: 'Meals Skipped', value: attendance.totals.meals_skipped, tone: 'text-red-400' },
+                            { label: 'Present / Absent', value: `${attendance.totalPresent} / ${attendance.totalAbsent}`, tone: 'text-sky-300' }
+                        ].map((card) => (
+                            <Card key={card.label} variant="glass">
+                                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/35">{card.label}</p>
+                                <p className={`text-5xl font-black mt-4 ${card.tone}`}>{loading ? '--' : card.value}</p>
+                            </Card>
+                        ))}
 
-                        <Card variant="glass" className="lg:col-span-3">
+                        <Card variant="glass" className="lg:col-span-4">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                                 <label className="block">
                                     <span className="text-[10px] font-black uppercase tracking-[0.3em] text-white/35">Date</span>
@@ -126,7 +144,7 @@ export default function AttendancePage() {
                                     </select>
                                 </label>
                                 <div className="text-sm text-white/45">
-                                    The table shows current attendance rows returned by `/api/attendance`.
+                                    Present and absent lists are auto-synced from booked meals once the meal window closes.
                                 </div>
                             </div>
                         </Card>
@@ -142,7 +160,7 @@ export default function AttendancePage() {
                         <div className="px-6 py-5 border-b border-white/10 flex items-center justify-between gap-4">
                             <div>
                                 <h2 className="text-2xl font-black uppercase tracking-tight">Present Students</h2>
-                                <p className="text-sm text-white/45 mt-1">Clean attendance table with date and meal filters.</p>
+                                <p className="text-sm text-white/45 mt-1">Students who scanned in during the selected meal window.</p>
                             </div>
                             {loading ? (
                                 <div className="flex items-center gap-3 text-sm text-white/50">
@@ -156,9 +174,9 @@ export default function AttendancePage() {
                             <div className="px-6 py-12 flex items-center justify-center">
                                 <div className="w-10 h-10 border-4 border-white/15 border-t-creative-lime rounded-full animate-spin" />
                             </div>
-                        ) : attendance.records.length === 0 ? (
+                        ) : attendance.presentUsers.length === 0 ? (
                             <div className="px-6 py-12 text-center">
-                                <p className="text-lg font-black uppercase tracking-[0.2em] text-white/30">No attendance found</p>
+                                <p className="text-lg font-black uppercase tracking-[0.2em] text-white/30">No present users found</p>
                                 <p className="text-sm text-white/45 mt-3">Try changing the selected date or meal type.</p>
                             </div>
                         ) : (
@@ -174,7 +192,7 @@ export default function AttendancePage() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-white/5">
-                                        {attendance.records.map((record) => (
+                                        {attendance.presentUsers.map((record) => (
                                             <tr key={`${record.student_id}-${record.date}-${record.meal_type}-${record.id || 'row'}`} className="hover:bg-white/5 transition-colors">
                                                 <td className="px-6 py-4 font-semibold text-white">{record.name || 'Student'}</td>
                                                 <td className="px-6 py-4 text-white/70">{record.student_id}</td>
@@ -182,6 +200,52 @@ export default function AttendancePage() {
                                                 <td className="px-6 py-4 text-white/70">{formatMeal(record.meal_type)}</td>
                                                 <td className="px-6 py-4">
                                                     <span className="inline-flex rounded-full border border-creative-lime/30 bg-creative-lime/10 px-3 py-1 text-xs font-black uppercase tracking-[0.2em] text-creative-lime">
+                                                        {formatStatus(record.status)}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </Card>
+
+                    <Card variant="premium" className="p-0 border-white/5 overflow-hidden">
+                        <div className="px-6 py-5 border-b border-white/10">
+                            <h2 className="text-2xl font-black uppercase tracking-tight text-red-400">Absent Users</h2>
+                            <p className="text-sm text-white/45 mt-1">Booked students who did not scan before the meal window ended.</p>
+                        </div>
+
+                        {loading ? (
+                            <div className="px-6 py-12 flex items-center justify-center">
+                                <div className="w-10 h-10 border-4 border-white/15 border-t-red-400 rounded-full animate-spin" />
+                            </div>
+                        ) : attendance.absentUsers.length === 0 ? (
+                            <div className="px-6 py-12 text-center">
+                                <p className="text-lg font-black uppercase tracking-[0.2em] text-white/30">No absent users found</p>
+                            </div>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="w-full min-w-[780px] text-left">
+                                    <thead className="bg-white/5 text-[10px] font-black uppercase tracking-[0.3em] text-white/40">
+                                        <tr>
+                                            <th className="px-6 py-4">Student Name</th>
+                                            <th className="px-6 py-4">Student ID</th>
+                                            <th className="px-6 py-4">Date</th>
+                                            <th className="px-6 py-4">Meal Type</th>
+                                            <th className="px-6 py-4">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        {attendance.absentUsers.map((record) => (
+                                            <tr key={`${record.student_id}-${record.date}-${record.meal_type}-${record.id || 'row'}-absent`} className="hover:bg-white/5 transition-colors">
+                                                <td className="px-6 py-4 font-semibold text-white">{record.name || 'Student'}</td>
+                                                <td className="px-6 py-4 text-white/70">{record.student_id}</td>
+                                                <td className="px-6 py-4 text-white/70">{record.date}</td>
+                                                <td className="px-6 py-4 text-white/70">{formatMeal(record.meal_type)}</td>
+                                                <td className="px-6 py-4">
+                                                    <span className="inline-flex rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.2em] text-red-300">
                                                         {formatStatus(record.status)}
                                                     </span>
                                                 </td>

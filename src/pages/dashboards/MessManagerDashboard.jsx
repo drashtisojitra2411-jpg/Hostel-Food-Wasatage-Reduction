@@ -26,11 +26,29 @@ export default function MessManagerDashboard() {
     const navigate = useNavigate()
     const [loading, setLoading] = useState(true)
     const [refreshing, setRefreshing] = useState(false)
-    const [stats, setStats] = useState({ totalBookings: 0, expectedAttendance: 0, lowStockItems: 0, todayWastage: 0 })
+    const [stats, setStats] = useState({
+        totalBookings: 0,
+        expectedAttendance: 0,
+        lowStockItems: 0,
+        todayWastage: 0,
+        mealsAttended: 0,
+        mealsSkipped: 0,
+        totalPenalties: 0,
+        totalRewards: 0
+    })
     const [barData, setBarData] = useState([])
     const [trendData, setTrendData] = useState([])
     const [alerts, setAlerts] = useState([])
-    const [attendance, setAttendance] = useState({ date: getTodayDate(), totalPresent: 0, students: [], totalsByMeal: [] })
+    const [attendance, setAttendance] = useState({
+        date: getTodayDate(),
+        totalPresent: 0,
+        totalAbsent: 0,
+        students: [],
+        presentUsers: [],
+        absentUsers: [],
+        totalsByMeal: [],
+        totals: { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
+    })
     const [wastage, setWastage] = useState({ total: 0, totalsByMeal: [], logs: [] })
     const [formData, setFormData] = useState({
         date: getTodayDate(),
@@ -41,6 +59,17 @@ export default function MessManagerDashboard() {
     const [submitting, setSubmitting] = useState(false)
     const [toastMessage, setToastMessage] = useState('')
     const [toastType, setToastType] = useState('info')
+    const [billingMonth, setBillingMonth] = useState(new Date().toISOString().slice(0, 7))
+    const [billingFilter, setBillingFilter] = useState({ payment_status: 'all', hostel_id: '', block: '' })
+    const [billingOverview, setBillingOverview] = useState({
+        total_students: 0,
+        total_meals_booked: 0,
+        total_revenue_expected: 0,
+        total_rewards_given: 0,
+        total_penalties_collected: 0
+    })
+    const [billingRows, setBillingRows] = useState([])
+    const [hostels, setHostels] = useState([])
 
     useEffect(() => {
         fetchDashboardData()
@@ -51,6 +80,12 @@ export default function MessManagerDashboard() {
             fetchDashboardData({ silent: true })
         }
     }, [formData.date])
+
+    useEffect(() => {
+        if (!loading) {
+            fetchBillingData()
+        }
+    }, [billingMonth, billingFilter.payment_status, billingFilter.hostel_id, billingFilter.block])
 
     async function fetchDashboardData({ silent = false } = {}) {
         if (!silent) {
@@ -65,12 +100,20 @@ export default function MessManagerDashboard() {
                 api.get('/api/chef/analytics'),
                 api.get(`/api/wastage?date=${formData.date}`)
             ])
+            if (isHostelAdmin) {
+                const hostelsRes = await api.get('/api/admin/hostels')
+                setHostels(Array.isArray(hostelsRes) ? hostelsRes : [])
+            }
 
             setStats({
                 totalBookings: dashRes?.stats?.total_bookings || 0,
                 expectedAttendance: dashRes?.stats?.expected_attendance || 0,
                 lowStockItems: dashRes?.stats?.low_stock_items || 0,
-                todayWastage: dashRes?.stats?.today_wastage || 0
+                todayWastage: dashRes?.stats?.today_wastage || 0,
+                mealsAttended: dashRes?.stats?.meals_attended || 0,
+                mealsSkipped: dashRes?.stats?.meals_skipped || 0,
+                totalPenalties: dashRes?.stats?.total_penalties || 0,
+                totalRewards: dashRes?.stats?.total_rewards || 0
             })
             setAlerts(Array.isArray(dashRes?.alerts) ? dashRes.alerts : [])
             setBarData(Array.isArray(analyticsRes?.weekly_waste) ? analyticsRes.weekly_waste : [])
@@ -78,8 +121,13 @@ export default function MessManagerDashboard() {
             setAttendance({
                 date: dashRes?.attendance?.date || getTodayDate(),
                 totalPresent: dashRes?.attendance?.total_present || 0,
+                totalAbsent: dashRes?.attendance?.total_absent || 0,
                 students: Array.isArray(dashRes?.attendance?.students) ? dashRes.attendance.students : [],
+                presentUsers: Array.isArray(dashRes?.attendance?.present_users) ? dashRes.attendance.present_users : [],
+                absentUsers: Array.isArray(dashRes?.attendance?.absent_users) ? dashRes.attendance.absent_users : [],
                 totalsByMeal: Array.isArray(dashRes?.attendance?.totals_by_meal) ? dashRes.attendance.totals_by_meal : []
+                ,
+                totals: dashRes?.attendance?.totals || { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
             })
             setWastage({
                 total: Number(wastageRes?.total_wastage || 0),
@@ -87,16 +135,62 @@ export default function MessManagerDashboard() {
                 logs: Array.isArray(wastageRes?.logs) ? wastageRes.logs : []
             })
         } catch (error) {
-            setStats({ totalBookings: 0, expectedAttendance: 0, lowStockItems: 0, todayWastage: 0 })
+            setStats({
+                totalBookings: 0,
+                expectedAttendance: 0,
+                lowStockItems: 0,
+                todayWastage: 0,
+                mealsAttended: 0,
+                mealsSkipped: 0,
+                totalPenalties: 0,
+                totalRewards: 0
+            })
             setAlerts([])
             setBarData([])
             setTrendData([])
-            setAttendance({ date: getTodayDate(), totalPresent: 0, students: [], totalsByMeal: [] })
+            setAttendance({
+                date: getTodayDate(),
+                totalPresent: 0,
+                totalAbsent: 0,
+                students: [],
+                presentUsers: [],
+                absentUsers: [],
+                totalsByMeal: [],
+                totals: { meals_booked: 0, meals_attended: 0, meals_skipped: 0 }
+            })
             setWastage({ total: 0, totalsByMeal: [], logs: [] })
             showToast(error.message || 'Failed to load dashboard data', 'error')
         } finally {
             setLoading(false)
             setRefreshing(false)
+        }
+    }
+
+    async function fetchBillingData() {
+        try {
+            const params = new URLSearchParams({ month: billingMonth })
+            if (billingFilter.payment_status !== 'all') params.set('payment_status', billingFilter.payment_status)
+            if (billingFilter.hostel_id) params.set('hostel_id', billingFilter.hostel_id)
+            if (billingFilter.block) params.set('block', billingFilter.block)
+            const billingRes = await api.get(`/api/mess-manager/billing?${params.toString()}`)
+            setBillingOverview(billingRes?.overview || {
+                total_students: 0,
+                total_meals_booked: 0,
+                total_revenue_expected: 0,
+                total_rewards_given: 0,
+                total_penalties_collected: 0
+            })
+            setBillingRows(Array.isArray(billingRes?.billing_rows) ? billingRes.billing_rows : [])
+        } catch (error) {
+            setBillingOverview({
+                total_students: 0,
+                total_meals_booked: 0,
+                total_revenue_expected: 0,
+                total_rewards_given: 0,
+                total_penalties_collected: 0
+            })
+            setBillingRows([])
+            showToast(error.message || 'Failed to load billing data', 'error')
         }
     }
 
@@ -192,10 +286,10 @@ export default function MessManagerDashboard() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 lg:gap-8">
                     {[
-                        { label: 'PROVISIONS SECURED', value: stats.totalBookings, color: 'text-creative-lime' },
-                        { label: 'EXPECTED UNITS', value: stats.expectedAttendance, color: 'text-white' },
-                        { label: 'PRESENT TODAY', value: attendance.totalPresent, color: 'text-sky-300' },
-                        { label: 'WASTE MEASURED', value: `${stats.todayWastage} KG`, color: 'text-creative-purple' }
+                        { label: 'MEALS BOOKED', value: stats.totalBookings, color: 'text-white' },
+                        { label: 'MEALS ATTENDED', value: stats.mealsAttended, color: 'text-creative-lime' },
+                        { label: 'MEALS SKIPPED', value: stats.mealsSkipped, color: 'text-red-400' },
+                        { label: 'PENALTIES ACTIVE', value: stats.totalPenalties, color: 'text-yellow-300' }
                     ].map((stat) => (
                         <Card key={stat.label} variant="glass">
                             <h3 className={`text-5xl font-black tracking-tighter mb-1 ${stat.color}`}>{loading ? '--' : stat.value}</h3>
@@ -269,10 +363,24 @@ export default function MessManagerDashboard() {
                                     </div>
                                 ))}
                             </div>
+                            <div className="grid grid-cols-3 gap-4 mb-6">
+                                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                    <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Booked</p>
+                                    <p className="text-2xl font-black mt-2">{attendance.totals.meals_booked}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                    <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Attended</p>
+                                    <p className="text-2xl font-black mt-2 text-creative-lime">{attendance.totals.meals_attended}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                    <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">Skipped</p>
+                                    <p className="text-2xl font-black mt-2 text-red-400">{attendance.totals.meals_skipped}</p>
+                                </div>
+                            </div>
                             <div className="max-h-80 overflow-y-auto space-y-3 pr-1">
-                                {attendance.students.length === 0 ? (
+                                {attendance.presentUsers.length === 0 ? (
                                     <div className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-sm text-white/45">No present students recorded yet.</div>
-                                ) : attendance.students.map((student) => (
+                                ) : attendance.presentUsers.map((student) => (
                                     <div key={`${student.student_id}-${student.meal_type}-${student.scanned_at}`} className="rounded-2xl bg-white/5 border border-white/10 px-4 py-4 flex items-center justify-between gap-4">
                                         <div>
                                             <p className="font-semibold text-white">{student.name}</p>
@@ -280,6 +388,36 @@ export default function MessManagerDashboard() {
                                         </div>
                                         <div className="text-right">
                                             <p className="text-xs uppercase tracking-[0.25em] text-sky-300">{student.meal_type}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </Card>
+                    </div>
+
+                    <div className="lg:col-span-2">
+                        <Card variant="glass" className="h-full border-l-4 border-l-red-500/50">
+                            <div className="flex items-center justify-between gap-4 mb-8">
+                                <div>
+                                    <h2 className="text-2xl font-black tracking-tighter italic uppercase">Absent Students</h2>
+                                    <p className="text-sm text-white/50 mt-2">Auto-marked after the meal window closes.</p>
+                                </div>
+                                <div className="text-right">
+                                    <p className="text-[10px] uppercase tracking-[0.3em] text-white/35">Total absent</p>
+                                    <p className="text-4xl font-black text-red-400">{attendance.totalAbsent}</p>
+                                </div>
+                            </div>
+                            <div className="max-h-80 overflow-y-auto space-y-3 pr-1">
+                                {attendance.absentUsers.length === 0 ? (
+                                    <div className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-sm text-white/45">No absent students for the selected date.</div>
+                                ) : attendance.absentUsers.map((student) => (
+                                    <div key={`${student.student_id}-${student.meal_type}-${student.scanned_at || 'absent'}`} className="rounded-2xl bg-white/5 border border-white/10 px-4 py-4 flex items-center justify-between gap-4">
+                                        <div>
+                                            <p className="font-semibold text-white">{student.name}</p>
+                                            <p className="text-xs text-white/45">{student.student_id}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="text-xs uppercase tracking-[0.25em] text-red-300">{student.meal_type}</p>
                                         </div>
                                     </div>
                                 ))}
@@ -393,6 +531,106 @@ export default function MessManagerDashboard() {
                                         </div>
                                     </div>
                                 ))}
+                            </div>
+                        </Card>
+                    </div>
+
+                    <div className="lg:col-span-4">
+                        <Card variant="premium" className="p-8">
+                            <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-6 mb-8">
+                                <div>
+                                    <h2 className="text-3xl font-black tracking-tighter italic uppercase">Billing Overview</h2>
+                                    <p className="text-sm text-white/50 mt-2">Monthly billing rollup for student collections, rewards, and penalties.</p>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <input
+                                        type="month"
+                                        value={billingMonth}
+                                        onChange={(event) => setBillingMonth(event.target.value)}
+                                        className="rounded-2xl border border-white/10 bg-black px-4 py-3 text-sm outline-none"
+                                    />
+                                    <select
+                                        value={billingFilter.payment_status}
+                                        onChange={(event) => setBillingFilter((prev) => ({ ...prev, payment_status: event.target.value }))}
+                                        className="rounded-2xl border border-white/10 bg-black px-4 py-3 text-sm outline-none"
+                                    >
+                                        <option value="all">All Status</option>
+                                        <option value="paid">Paid</option>
+                                        <option value="unpaid">Unpaid</option>
+                                    </select>
+                                    {isHostelAdmin ? (
+                                        <select
+                                            value={billingFilter.hostel_id}
+                                            onChange={(event) => setBillingFilter((prev) => ({ ...prev, hostel_id: event.target.value }))}
+                                            className="rounded-2xl border border-white/10 bg-black px-4 py-3 text-sm outline-none"
+                                        >
+                                            <option value="">All Hostels</option>
+                                            {hostels.map((hostel) => <option key={hostel.id} value={hostel.id}>{hostel.name}</option>)}
+                                        </select>
+                                    ) : null}
+                                    <input
+                                        type="text"
+                                        value={billingFilter.block}
+                                        onChange={(event) => setBillingFilter((prev) => ({ ...prev, block: event.target.value }))}
+                                        placeholder="Block"
+                                        className="rounded-2xl border border-white/10 bg-black px-4 py-3 text-sm outline-none"
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+                                {[
+                                    { label: 'Students', value: billingOverview.total_students },
+                                    { label: 'Meals Booked', value: billingOverview.total_meals_booked },
+                                    { label: 'Revenue Expected', value: `₹${billingOverview.total_revenue_expected}` },
+                                    { label: 'Rewards Given', value: `₹${billingOverview.total_rewards_given}`, tone: 'text-creative-lime' },
+                                    { label: 'Penalties Collected', value: `₹${billingOverview.total_penalties_collected}`, tone: 'text-red-400' }
+                                ].map((item) => (
+                                    <div key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                        <p className="text-[10px] uppercase tracking-[0.25em] text-white/35">{item.label}</p>
+                                        <p className={`text-2xl font-black mt-2 ${item.tone || ''}`}>{item.value}</p>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full min-w-[900px] text-left">
+                                    <thead className="bg-white/5 text-[10px] font-black uppercase tracking-[0.3em] text-white/40">
+                                        <tr>
+                                            <th className="px-4 py-4">Student</th>
+                                            <th className="px-4 py-4">Hostel / Block</th>
+                                            <th className="px-4 py-4">Total Bill</th>
+                                            <th className="px-4 py-4">Status</th>
+                                            <th className="px-4 py-4">Penalty Count</th>
+                                            <th className="px-4 py-4">Rewards Earned</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        {billingRows.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="6" className="px-4 py-8 text-sm text-white/45">No billing rows for the selected filters.</td>
+                                            </tr>
+                                        ) : billingRows.map((row) => (
+                                            <tr key={row.user_id} className="hover:bg-white/5">
+                                                <td className="px-4 py-4">
+                                                    <p className="font-semibold text-white">{row.name}</p>
+                                                    <p className="text-xs text-white/45">{row.email}</p>
+                                                </td>
+                                                <td className="px-4 py-4 text-white/70">{row.hostel_name} / {row.block}</td>
+                                                <td className="px-4 py-4 font-semibold text-white">₹{row.total_bill}</td>
+                                                <td className="px-4 py-4">
+                                                    <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.2em] ${
+                                                        row.payment_status === 'paid'
+                                                            ? 'border-creative-lime/30 bg-creative-lime/10 text-creative-lime'
+                                                            : 'border-red-500/30 bg-red-500/10 text-red-300'
+                                                    }`}>
+                                                        {row.payment_status}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-4 text-red-300">{row.penalty_count}</td>
+                                                <td className="px-4 py-4 text-creative-lime">₹{row.rewards_earned}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             </div>
                         </Card>
                     </div>
