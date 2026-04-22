@@ -1,0 +1,4 @@
+server/
+database/
+supabase/
+node_modules/
