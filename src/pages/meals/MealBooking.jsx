@@ -24,7 +24,8 @@ export default function MealBooking() {
         async function fetchData() {
                 setLoading(true);
                 try {
-                    const dateStr = selectedDate.toISOString().split('T')[0];
+                    const localDate = new Date(selectedDate.getTime() - selectedDate.getTimezoneOffset() * 60000);
+                    const dateStr = localDate.toISOString().split('T')[0];
                     const dayName = selectedDate.toLocaleDateString('en-US', { weekday: 'long' });
 
                     const [mealsData, bookingsData, finalMenuResponse] = await Promise.all([
@@ -68,14 +69,15 @@ export default function MealBooking() {
 
     const toggleBooking = async (meal) => {
         const isBooked = bookings[meal.id];
-        const dateStr = selectedDate.toISOString().split('T')[0];
+        const localDate = new Date(selectedDate.getTime() - selectedDate.getTimezoneOffset() * 60000);
+        const dateStr = localDate.toISOString().split('T')[0];
         try {
             if (isBooked) {
                 await api.delete('/api/meal-bookings', { meal_id: meal.id });
                 setBookings(prev => ({ ...prev, [meal.id]: false }));
                 setNotification({ show: true, message: 'AUTH WITHDRAWN', type: 'info' });
             } else {
-                await api.post('/api/meal-bookings', { meal_id: meal.id, booking_date: dateStr });
+                await api.post('/api/book', { meal_type: meal.meal_type, date: dateStr });
                 setBookings(prev => ({ ...prev, [meal.id]: true }));
                 setNotification({ show: true, message: 'PROVISION SECURED', type: 'success' });
             }
@@ -223,9 +225,9 @@ export default function MealBooking() {
                         </div>
                     ) : (
                         <Card variant="glass" className="py-32 flex flex-col items-center text-center">
-                            <div className="text-6xl mb-8 opacity-20 group-hover:opacity-100 transition-opacity">📡</div>
-                            <h3 className="text-3xl font-black italic uppercase tracking-tighter mb-4">Frequency Jammed</h3>
-                            <p className="text-white/40 max-w-md font-medium px-8">The command center has not yet transmitted the nutritional schedule for this temporal coordinate.</p>
+                            <div className="w-12 h-12 border-4 border-creative-lime border-t-transparent rounded-full animate-spin mb-8"></div>
+                            <h3 className="text-3xl font-black italic uppercase tracking-tighter mb-4 text-creative-lime">Calibrating Network</h3>
+                            <p className="text-white/40 max-w-md font-medium px-8">Synchronizing telemetry data with the primary command matrix. Please wait.</p>
                         </Card>
                     )}
 

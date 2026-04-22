@@ -796,6 +796,45 @@ async function ensureWastageConstraints() {
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_wastage_logs_date_meal_item ON wastage_logs(date, meal_type, item_name)');
 }
 
+// ─── Auto-Meal Generation ───────────────────────────────────────────────────
+// Ensures breakfast, lunch, and dinner entries exist for a given date.
+// If any are missing, they are created with canonical timings and default capacity.
+async function ensureMealsForDate(clientOrPool, date) {
+    const normalizedDate = normalizeDateInput(date);
+    if (!normalizedDate) return [];
+
+    const existingRes = await clientOrPool.query(
+        'SELECT meal_type FROM meals WHERE date = $1',
+        [normalizedDate]
+    );
+    const existingTypes = new Set(existingRes.rows.map(r => r.meal_type));
+
+    for (const mealType of MEAL_ORDER) {
+        if (existingTypes.has(mealType)) continue;
+
+        const timing = getMealTimingForType(mealType);
+        if (!timing) continue;
+
+        const startTime = toDbTime(timing.start);
+        const endTime = toDbTime(timing.end);
+        const bookingDeadline = `${normalizedDate}T${timing.start}:00+05:30`;
+        const cancellationDeadline = `${normalizedDate}T${timing.start}:00+05:30`;
+
+        await clientOrPool.query(
+            `INSERT INTO meals (id, meal_type, date, start_time, end_time, booking_deadline, cancellation_deadline, max_capacity, is_active)
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, 200, true)
+             ON CONFLICT (meal_type, date) DO NOTHING`,
+            [mealType, normalizedDate, startTime, endTime, bookingDeadline, cancellationDeadline]
+        );
+    }
+
+    const allMeals = await clientOrPool.query(
+        'SELECT * FROM meals WHERE date = $1 ORDER BY start_time ASC',
+        [normalizedDate]
+    );
+    return allMeals.rows;
+}
+
 async function ensureAnonymousFeedbackTable() {
     await pool.query(
         `CREATE TABLE IF NOT EXISTS feedback (
@@ -1546,13 +1585,33 @@ app.put('/api/admin/assign-chef', authMiddleware, requireSuperAdmin, async (req,
 // MEALS & BOOKINGS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// GET /api/meals?date=YYYY-MM-DD
+// GET /api/meals?date=YYYY-MM-DD&type=breakfast
 app.get('/api/meals', async (req, res) => {
     try {
-        const { date } = req.query;
-        if (!date) return res.status(400).json({ error: 'Date parameter required' });
+        const date = normalizeDateInput(req.query.date);
+        if (!date) return res.status(400).json({ error: 'Date parameter required (YYYY-MM-DD)' });
 
-        const result = await pool.query('SELECT * FROM meals WHERE date = $1', [date]);
+        const type = normalizeMealType(req.query.type);
+
+        // Auto-create meals if none exist for this date
+        await ensureMealsForDate(pool, date);
+
+        let query = `
+            SELECT m.*,
+                COALESCE((SELECT COUNT(*) FROM meal_bookings mb WHERE mb.meal_id = m.id AND mb.status IN ('booked', 'attended', 'skipped')), 0)::int AS booked_count
+            FROM meals m
+            WHERE m.date = $1
+        `;
+        const params = [date];
+
+        if (type) {
+            query += ' AND m.meal_type = $2';
+            params.push(type);
+        }
+
+        query += ' ORDER BY m.start_time ASC';
+
+        const result = await pool.query(query, params);
         const rows = result.rows.map((meal) => {
             const mealType = normalizeMealType(meal.meal_type);
             const timing = getMealTimingForType(mealType);
@@ -1566,6 +1625,7 @@ app.get('/api/meals', async (req, res) => {
         });
         res.json(rows);
     } catch (error) {
+        console.error('Meals fetch error:', error);
         res.status(500).json({ error: 'Failed to fetch meals' });
     }
 });
@@ -1634,7 +1694,7 @@ async function generateAttendanceQrResponse({ mealType, date }) {
         throw new Error('Valid meal type is required');
     }
 
-    const mealRes = await pool.query(
+    let mealRes = await pool.query(
         `SELECT id, meal_type, date, start_time, end_time
          FROM meals
          WHERE meal_type = $1 AND date = $2
@@ -1644,9 +1704,21 @@ async function generateAttendanceQrResponse({ mealType, date }) {
     );
 
     if (mealRes.rows.length === 0) {
-        const error = new Error('Meal not found for selected date and meal type');
-        error.status = 404;
-        throw error;
+        // Auto-create meals for this date instead of returning 404
+        await ensureMealsForDate(pool, normalizedDate);
+        mealRes = await pool.query(
+            `SELECT id, meal_type, date, start_time, end_time
+             FROM meals
+             WHERE meal_type = $1 AND date = $2
+             ORDER BY start_time ASC
+             LIMIT 1`,
+            [normalizedMealType, normalizedDate]
+        );
+        if (mealRes.rows.length === 0) {
+            const error = new Error('Failed to create meal entry');
+            error.status = 500;
+            throw error;
+        }
     }
 
     const meal = mealRes.rows[0];
@@ -1741,7 +1813,7 @@ async function handleAttendanceScan(req, res) {
             return res.status(400).json({ error: 'QR code has expired' });
         }
 
-        const mealRes = await client.query(
+        let mealRes = await client.query(
             `SELECT id, date, meal_type, start_time, end_time
              FROM meals
              WHERE meal_type = $1 AND date = $2
@@ -1750,7 +1822,19 @@ async function handleAttendanceScan(req, res) {
             [scannedMealType, scannedDate]
         );
         if (mealRes.rows.length === 0) {
-            return res.status(404).json({ error: 'No meal found for scanned QR payload' });
+            // Auto-create meals for this date instead of returning 404
+            await ensureMealsForDate(client, scannedDate);
+            mealRes = await client.query(
+                `SELECT id, date, meal_type, start_time, end_time
+                 FROM meals
+                 WHERE meal_type = $1 AND date = $2
+                 ORDER BY start_time ASC
+                 LIMIT 1`,
+                [scannedMealType, scannedDate]
+            );
+            if (mealRes.rows.length === 0) {
+                return res.status(500).json({ error: 'Failed to create meal entry' });
+            }
         }
 
         const meal = mealRes.rows[0];
@@ -2404,6 +2488,61 @@ app.delete('/api/meal-bookings', authMiddleware, async (req, res) => {
         res.json({ message: 'Booking cancelled' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to cancel booking' });
+    }
+});
+
+// POST /api/book — simplified booking endpoint accepting { date, meal_type }
+app.post('/api/book', authMiddleware, async (req, res) => {
+    try {
+        const date = normalizeDateInput(req.body?.date);
+        const mealType = normalizeMealType(req.body?.meal_type);
+
+        if (!date || !mealType) {
+            return res.status(400).json({ error: 'date (YYYY-MM-DD) and meal_type (breakfast/lunch/dinner) are required' });
+        }
+
+        // Ensure the meal exists (auto-create if missing)
+        await ensureMealsForDate(pool, date);
+
+        const mealRes = await pool.query(
+            'SELECT id, meal_type, date FROM meals WHERE meal_type = $1 AND date = $2 LIMIT 1',
+            [mealType, date]
+        );
+
+        if (mealRes.rows.length === 0) {
+            return res.status(500).json({ error: 'Failed to find or create meal' });
+        }
+
+        const meal = mealRes.rows[0];
+        const qrToken = buildBookingQrToken({
+            userId: req.user.id,
+            mealId: meal.id,
+            bookingDate: date,
+            mealType: mealType
+        });
+
+        const result = await pool.query(
+            `INSERT INTO meal_bookings (
+                user_id, meal_id, booking_date, status, original_price, discounted_price,
+                reward_applied, attendance_status, qr_token
+             )
+             VALUES ($1, $2, $3, 'booked', $4, $4, false, 'pending', $5)
+             RETURNING id, meal_id, original_price, discounted_price, reward_applied, attendance_status, qr_token`,
+            [req.user.id, meal.id, date, DEFAULT_MEAL_BASE_FEE, qrToken]
+        );
+
+        // Increment booked_count is implicit (counted via meal_bookings subquery)
+        res.status(201).json({
+            ...result.rows[0],
+            meal_type: mealType,
+            date: date
+        });
+    } catch (error) {
+        if (error.code === '23505') {
+            return res.status(409).json({ error: 'Booking already exists for this meal' });
+        }
+        console.error('Book error:', error);
+        res.status(500).json({ error: 'Failed to create booking' });
     }
 });
 

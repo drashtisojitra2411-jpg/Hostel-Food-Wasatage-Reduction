@@ -5,14 +5,8 @@ import { getMealTimingForType } from '../../../shared/mealTimings'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-const fallbackMenu = {
-    Monday: { breakfast: 'Poha', lunch: 'Dal Rice', dinner: 'Khichdi' },
-    Tuesday: { breakfast: 'Upma', lunch: 'Paneer Roti', dinner: 'Pulao' },
-    Wednesday: { breakfast: 'Sandwich', lunch: 'Rajma Rice', dinner: 'Chapati Sabji' },
-    Thursday: { breakfast: 'Idli Sambar', lunch: 'Veg Biryani', dinner: 'Curd Rice' },
-    Friday: { breakfast: 'Paratha', lunch: 'Sambar Rice', dinner: 'Lemon Rice' },
-    Saturday: { breakfast: 'Dosa', lunch: 'Kadhi Chawal', dinner: 'Veg Noodles' },
-    Sunday: { breakfast: 'Chole Bhature', lunch: 'Special Thali', dinner: 'Special Meal' }
+const emptyMenu = {
+    Monday: {}, Tuesday: {}, Wednesday: {}, Thursday: {}, Friday: {}, Saturday: {}, Sunday: {}
 }
 
 function getMealWindowLabel(mealType) {
@@ -28,7 +22,7 @@ const mealMeta = {
 }
 
 export default function FinalMenu() {
-    const [menu, setMenu] = useState(fallbackMenu)
+    const [menu, setMenu] = useState(emptyMenu)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
 
@@ -44,16 +38,16 @@ export default function FinalMenu() {
                 const data = await api.get('/api/final-menu')
 
                 if (mounted && data?.menu && typeof data.menu === 'object') {
-                    setMenu({ ...fallbackMenu, ...data.menu })
+                    setMenu({ ...emptyMenu, ...data.menu })
                 } else if (mounted) {
-                    setMenu(fallbackMenu)
-                    setError('Using fallback menu')
+                    setMenu(emptyMenu)
+                    setError('Menu not yet published.')
                 }
             } catch (err) {
                 if (mounted) {
                     console.error('Final menu fetch error:', err)
-                    setMenu(fallbackMenu)
-                    setError('Using fallback menu')
+                    setMenu(emptyMenu)
+                    setError('Menu not yet published.')
                 }
             } finally {
                 if (mounted) {
@@ -68,7 +62,7 @@ export default function FinalMenu() {
         }
     }, [])
 
-    const cards = useMemo(() => DAYS.map((day) => ({ day, meals: menu?.[day] || fallbackMenu[day] })), [menu])
+    const cards = useMemo(() => DAYS.map((day) => ({ day, meals: menu?.[day] || {} })), [menu])
 
     return (
         <div className="min-h-screen bg-black text-white selection:bg-creative-lime selection:text-black">
@@ -125,7 +119,7 @@ export default function FinalMenu() {
                                                         <span className="text-[11px] text-white/45">{mealMeta[mealKey].time}</span>
                                                     </div>
                                                     <p className="text-base sm:text-lg font-semibold text-white mt-2 break-words">
-                                                        {meals?.[mealKey] || fallbackMenu[day][mealKey]}
+                                                        {meals?.[mealKey] || <span className="text-white/30 italic font-normal text-sm">Not published yet</span>}
                                                     </p>
                                                 </div>
                                             ))}

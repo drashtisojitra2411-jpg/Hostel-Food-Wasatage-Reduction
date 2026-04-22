@@ -9,7 +9,8 @@ import { ATTENDANCE_QR_EXPECTED_FORMAT } from '../../../shared/attendanceQr'
 const MEAL_OPTIONS = ['breakfast', 'lunch', 'dinner']
 
 function getTodayDate() {
-    return new Date().toISOString().slice(0, 10)
+    const localDate = new Date()
+    return new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000).toISOString().split('T')[0]
 }
 
 function formatMealLabel(value = '') {
