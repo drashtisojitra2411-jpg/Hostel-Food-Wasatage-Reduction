@@ -1,4 +1,4 @@
-# 🚀 ZeroBite – Hostel Food Wastage Reduction System
+# 🚀 AnnaSetu – Hostel Food Wastage Reduction System
 
 A smart web-based system to reduce food wastage in hostels by tracking real-time meal attendance using QR code scanning.
 
